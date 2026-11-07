@@ -27,6 +27,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="referrer" content="no-referrer" />
 <title>PDF Word Reader</title>
 <meta name="description" content="Read French PDF books on any device. Tap a word for translation and pronunciation, select a phrase, save words, and resume where you stopped." />
 <meta name="theme-color" content="#f7f1e7" />
@@ -659,6 +660,12 @@
     line-height: 1.5;
     overflow-wrap: anywhere;
   }
+  .popup-audio-hint {
+    margin: 8px 0 0;
+    color: var(--faint);
+    font-size: 11px;
+    line-height: 1.45;
+  }
 
   /* Account modal */
   .modal-backdrop {
@@ -954,6 +961,7 @@
     <button class="btn btn-primary" id="saveWordBtn" type="button" disabled>Save word</button>
   </div>
   <div class="popup-reasons hidden" id="popupReasons"></div>
+  <p class="popup-audio-hint hidden" id="popupAudioHint">No sound on iPhone? Turn off the Silent switch on the side of the phone and turn the volume up.</p>
 </div>
 
 <div class="modal-backdrop hidden" id="accountModal" aria-hidden="true">
@@ -1056,6 +1064,7 @@
   const popupTranslation = $('popupTranslation');
   const popupAlt = $('popupAlt');
   const popupReasons = $('popupReasons');
+  const popupAudioHint = $('popupAudioHint');
   const speakWordBtn = $('speakWordBtn');
   const speakTranslationBtn = $('speakTranslationBtn');
   const saveWordBtn = $('saveWordBtn');
@@ -1746,6 +1755,53 @@
 
   /* ---------------- Pronunciation ---------------- */
 
+  const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+  const SPEECH_LANGS = {
+    fr: 'fr-FR', en: 'en-US', es: 'es-ES', de: 'de-DE',
+    it: 'it-IT', pt: 'pt-BR', ar: 'ar-SA', zh: 'zh-CN'
+  };
+
+  function speechLang(code) {
+    return SPEECH_LANGS[code] || serviceLang(code);
+  }
+
+  let audioContext = null;
+  let speechPrimed = false;
+
+  // iOS Safari only allows the first speechSynthesis.speak() that happens inside a
+  // real tap, and it starts Web Audio suspended. Prime both on the first touch
+  // anywhere on the page so every later tap can speak normally.
+  function primeAudio() {
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (Ctx) {
+        if (!audioContext) audioContext = new Ctx();
+        if (audioContext.state === 'suspended') audioContext.resume();
+        const buffer = audioContext.createBuffer(1, 1, 22050);
+        const source = audioContext.createBufferSource();
+        source.buffer = buffer;
+        source.connect(audioContext.destination);
+        source.start(0);
+      }
+    } catch (e) { /* ignore */ }
+
+    if (!speechPrimed && 'speechSynthesis' in window) {
+      try {
+        const primer = new SpeechSynthesisUtterance(' ');
+        primer.volume = 0;
+        primer.rate = 10;
+        window.speechSynthesis.speak(primer);
+        speechPrimed = true;
+      } catch (e) { /* ignore */ }
+    }
+  }
+
+  document.addEventListener('pointerdown', primeAudio, { capture: true, passive: true });
+  document.addEventListener('touchstart', primeAudio, { capture: true, passive: true });
+  document.addEventListener('keydown', primeAudio, { capture: true });
+
   function stopSpeech() {
     if (currentAudio) {
       const audio = currentAudio;
@@ -1758,14 +1814,15 @@
   }
 
   function speakFallback(text, lang) {
-    if (!('speechSynthesis' in window)) return;
+    if (!('speechSynthesis' in window)) return false;
+    const synth = window.speechSynthesis;
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = lang;
     utterance.rate = 0.9;
     const base = lang.split('-')[0].toLowerCase();
     const prefs = VOICE_PREFS[base] || [];
     let voices = [];
-    try { voices = window.speechSynthesis.getVoices() || []; } catch (e) { voices = []; }
+    try { voices = synth.getVoices() || []; } catch (e) { voices = []; }
     let voice = null;
     for (const pref of prefs) {
       voice = voices.find((v) => String(v.name || '').toLowerCase().includes(pref.toLowerCase()));
@@ -1773,7 +1830,48 @@
     }
     if (!voice) voice = voices.find((v) => String(v.lang || '').toLowerCase().startsWith(base)) || null;
     if (voice) utterance.voice = voice;
-    try { window.speechSynthesis.speak(utterance); } catch (e) { /* ignore */ }
+
+    const speak = () => { try { synth.speak(utterance); } catch (e) { /* ignore */ } };
+    // Cancelling immediately before speak() can swallow the new utterance on iOS.
+    if (IS_IOS && (synth.speaking || synth.pending)) {
+      try { synth.cancel(); } catch (e) { /* ignore */ }
+      setTimeout(speak, 60);
+    } else {
+      speak();
+    }
+    return true;
+  }
+
+  function googleTtsUrl(text, lang) {
+    // The old tw-ob URL without ttsspeed started returning 404, which is why
+    // audio fell through to the device voice (and went silent on iPhone).
+    return 'https://translate.google.com/translate_tts?ie=UTF-8&client=gtx&ttsspeed=1&tl=' +
+      encodeURIComponent(lang) + '&q=' + encodeURIComponent(text);
+  }
+
+  function playGoogleAudio(text, lang, onFail) {
+    let audio;
+    try { audio = new Audio(); } catch (e) { if (onFail) onFail(); return; }
+    audio.preload = 'auto';
+    audio.playbackRate = 0.95;
+    audio.src = googleTtsUrl(text, lang);
+    let settled = false;
+    const fail = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(watchdog);
+      if (currentAudio === audio) currentAudio = null;
+      if (onFail) onFail();
+    };
+    const watchdog = setTimeout(() => {
+      if (settled) return;
+      if (audio.currentTime === 0 && audio.readyState < 3) fail();
+    }, 2500);
+    audio.addEventListener('error', fail, { once: true });
+    audio.addEventListener('playing', () => { settled = true; clearTimeout(watchdog); }, { once: true });
+    currentAudio = audio;
+    const played = audio.play();
+    if (played && typeof played.catch === 'function') played.catch(fail);
   }
 
   function speakText(text, langCode) {
@@ -1781,22 +1879,18 @@
     if (!clean) return;
     stopSpeech();
     const lang = serviceLang(langCode);
-    const url = 'https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=' +
-      encodeURIComponent(lang) + '&q=' + encodeURIComponent(clean);
-    const audio = new Audio(url);
-    audio.playbackRate = 0.95;
-    audio.preload = 'auto';
-    let fellBack = false;
-    const fallback = () => {
-      if (fellBack || currentAudio !== audio) return;
-      fellBack = true;
-      currentAudio = null;
-      speakFallback(clean, lang);
-    };
-    audio.addEventListener('error', fallback);
-    currentAudio = audio;
-    const playResult = audio.play();
-    if (playResult && typeof playResult.catch === 'function') playResult.catch(fallback);
+    const voiceLang = speechLang(langCode);
+
+    // iPhone and iPad: Safari mutes <audio> with the Silent switch and blocks
+    // speech that does not start inside the tap, so the built-in voice goes
+    // first. It starts instantly and needs no network.
+    if (IS_IOS) {
+      if (speakFallback(clean, voiceLang)) return;
+      playGoogleAudio(clean, lang, null);
+      return;
+    }
+
+    playGoogleAudio(clean, lang, () => speakFallback(clean, voiceLang));
   }
 
   if ('speechSynthesis' in window) {
@@ -3180,6 +3274,9 @@
   updateThemeButton();
   setStatus('Ready. Open a PDF to start reading.');
   updateEmptyHint();
+
+  // iPhone and iPad mute web audio with the Silent switch, so say so up front.
+  if (IS_IOS) popupAudioHint.classList.remove('hidden');
 })();
 </script>
 </body>

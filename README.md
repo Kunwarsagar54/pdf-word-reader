@@ -31,7 +31,14 @@ Read French PDF books in the browser. Tap any word to see its translation and he
 3. **Claude artifact runtime** — only when the page is embedded in a compatible artifact runtime.
 4. **MyMemory** — last resort.
 
-Pronunciation tries Google's recorded audio first, then the device's Web Speech API voices.
+Pronunciation tries Google's recorded audio first, then the device's Web Speech API voices. On iPhone and iPad the built-in voice is used first, because Safari needs speech to start inside the tap.
+
+## If you hear no sound on iPhone
+
+- Check the **Silent switch** on the side of the phone. iOS mutes browser audio, including speech, when it is on.
+- Turn the **volume** up with the side buttons.
+- If it still fails, try Chrome on iOS, which ignores the Silent switch for speech.
+
 
 ## Run it locally
 
