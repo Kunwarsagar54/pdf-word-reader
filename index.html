@@ -1770,10 +1770,23 @@
   let audioContext = null;
   let speechPrimed = false;
 
+  // Safari declares page audio as "ambient", which the iPhone Silent switch mutes.
+  // "playback" keeps audio audible and is what the Google voice needs on iOS.
+  const HAS_AUDIO_SESSION = (() => {
+    try {
+      if (!navigator.audioSession) return false;
+      navigator.audioSession.type = 'playback';
+      return navigator.audioSession.type === 'playback';
+    } catch (e) { return false; }
+  })();
+
   // iOS Safari only allows the first speechSynthesis.speak() that happens inside a
   // real tap, and it starts Web Audio suspended. Prime both on the first touch
   // anywhere on the page so every later tap can speak normally.
   function primeAudio() {
+    if (HAS_AUDIO_SESSION) {
+      try { navigator.audioSession.type = 'playback'; } catch (e) { /* ignore */ }
+    }
     try {
       const Ctx = window.AudioContext || window.webkitAudioContext;
       if (Ctx) {
@@ -1823,12 +1836,30 @@
     const prefs = VOICE_PREFS[base] || [];
     let voices = [];
     try { voices = synth.getVoices() || []; } catch (e) { voices = []; }
+
+    // Prefer the higher-quality voices iOS/Android install separately. They are
+    // listed as "Enhanced", "Premium" or "Siri", and sound far less robotic.
+    const rank = (voice) => {
+      const name = String(voice.name || '').toLowerCase();
+      const voiceLang = String(voice.lang || '').toLowerCase().replace('_', '-');
+      if (!voiceLang.startsWith(base)) return -1;
+      let score = 0;
+      if (name.includes('enhanced') || name.includes('premium')) score += 100;
+      if (name.includes('siri')) score += 80;
+      // Keep the requested region ahead of a higher-quality voice from another one.
+      if (voiceLang === lang.toLowerCase()) score += 120;
+      const prefIndex = prefs.findIndex((pref) => name.includes(pref.toLowerCase()));
+      if (prefIndex >= 0) score += 40 - prefIndex;
+      if (voice.localService) score += 5;
+      return score;
+    };
     let voice = null;
-    for (const pref of prefs) {
-      voice = voices.find((v) => String(v.name || '').toLowerCase().includes(pref.toLowerCase()));
-      if (voice) break;
+    let best = -1;
+    for (const candidate of voices) {
+      const score = rank(candidate);
+      if (score > best) { best = score; voice = candidate; }
     }
-    if (!voice) voice = voices.find((v) => String(v.lang || '').toLowerCase().startsWith(base)) || null;
+    if (best < 0) voice = null;
     if (voice) utterance.voice = voice;
 
     const speak = () => { try { synth.speak(utterance); } catch (e) { /* ignore */ } };
@@ -1855,6 +1886,7 @@
     let audio;
     try { audio = new Audio(); } catch (e) { if (onFail) onFail(); return; }
     audio.preload = 'auto';
+    audio.setAttribute('playsinline', '');
     audio.playbackRate = 0.95;
     audio.src = googleTtsUrl(text, lang);
     let settled = false;
@@ -1862,13 +1894,15 @@
       if (settled) return;
       settled = true;
       clearTimeout(watchdog);
+      try { audio.pause(); audio.removeAttribute('src'); audio.load(); } catch (e) { /* ignore */ }
       if (currentAudio === audio) currentAudio = null;
       if (onFail) onFail();
     };
+    // Mobile networks can be slow, so give the file a little longer to start.
     const watchdog = setTimeout(() => {
       if (settled) return;
       if (audio.currentTime === 0 && audio.readyState < 3) fail();
-    }, 2500);
+    }, IS_IOS ? 5000 : 2500);
     audio.addEventListener('error', fail, { once: true });
     audio.addEventListener('playing', () => { settled = true; clearTimeout(watchdog); }, { once: true });
     currentAudio = audio;
@@ -1883,15 +1917,10 @@
     const lang = serviceLang(langCode);
     const voiceLang = speechLang(langCode);
 
-    // iPhone and iPad: Safari mutes <audio> with the Silent switch and blocks
-    // speech that does not start inside the tap, so the built-in voice goes
-    // first. It starts instantly and needs no network.
-    if (IS_IOS) {
-      if (speakFallback(clean, voiceLang)) return;
-      playGoogleAudio(clean, lang, null);
-      return;
-    }
-
+    // Google's recorded voice sounds far more natural than the built-in one, so it
+    // goes first everywhere. On iOS it still starts inside the tap, and the audio
+    // session is set to "playback" so the Silent switch cannot mute it. The device
+    // voice stays as the fallback if the file cannot load.
     playGoogleAudio(clean, lang, () => speakFallback(clean, voiceLang));
   }
 
@@ -3278,7 +3307,8 @@
   updateEmptyHint();
 
   // iPhone and iPad mute web audio with the Silent switch, so say so up front.
-  if (IS_IOS) popupAudioHint.classList.remove('hidden');
+  // Older Safari cannot keep page audio audible when the Silent switch is on.
+  if (IS_IOS && !HAS_AUDIO_SESSION) popupAudioHint.classList.remove('hidden');
 })();
 </script>
 </body>
