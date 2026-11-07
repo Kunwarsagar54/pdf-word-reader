@@ -15,7 +15,7 @@ Read French PDF books in the browser. Tap any word to see its translation and he
 - **My books** keeps your PDFs, page position, and last-opened time on the device.
 - **Text size slider**, light and dark themes, drag and drop a PDF anywhere.
 - **Profiles** — a guest library, local profiles, and optional Google sign-in, each with its own books and saved words.
-- **Works offline-ish**: the page itself is static, and PDF parsing happens locally. Translation and pronunciation need a network.
+- **Works offline-ish**: the page itself is static, and PDF parsing and the natural voice run locally. Translation (and the Google voice) need a network.
 
 ## Privacy
 
@@ -31,7 +31,14 @@ Read French PDF books in the browser. Tap any word to see its translation and he
 3. **Claude artifact runtime** — only when the page is embedded in a compatible artifact runtime.
 4. **MyMemory** — last resort.
 
-Pronunciation uses Google's recorded voice first, because it sounds much more natural than the built-in one. If the audio file cannot load, the app falls back to the device's Web Speech API voices and prefers any Enhanced, Premium or Siri voice installed on the device.
+## Pronunciation
+
+Pick a voice in the **Voice** menu:
+
+- **Natural** (default) — a Piper neural voice that runs entirely in the browser with ONNX Runtime. The first time you tap a word, the app asks before downloading the voice (about 100 MB, one time only, then cached on the device). It sounds natural, keeps working offline after the download, and the text never leaves the device. French, English, Spanish, German, Italian and Portuguese are supported.
+- **Google (fast)** — Google's recorded voice, instant with nothing to download.
+
+While the natural voice is downloading, taps keep working with the Google voice. If the natural voice cannot start (old browser, low memory, or blocked storage), the app falls back to Google and then to the device's Web Speech API voices, preferring any Enhanced, Premium or Siri voice installed on the device.
 
 ## If you hear no sound on iPhone
 

@@ -884,6 +884,13 @@
         <select id="targetLang" aria-label="Translate to"></select>
       </label>
 
+      <label class="field" for="voiceMode" title="Pronunciation voice">Voice
+        <select id="voiceMode" aria-label="Pronunciation voice">
+          <option value="natural">Natural</option>
+          <option value="google">Google (fast)</option>
+        </select>
+      </label>
+
       <label class="field size-field" for="textSize">Text size
         <input id="textSize" type="range" min="15" max="30" step="1" value="19" aria-label="Book text size" />
         <span class="size-value" id="sizeValue">19px</span>
@@ -986,6 +993,7 @@
   const PROFILES_KEY = 'pdfWordReader.profiles';
   const CURRENT_USER_KEY = 'pdfWordReader.currentUser';
   const GOOGLE_CLIENT_ID_KEY = 'pdfWordReader.googleClientId';
+  const VOICE_MODE_KEY = 'pdfWordReader.voiceMode';
   const WORDS_PREFIX = 'pdfWordReader.words.';
   const PREFS_PREFIX = 'pdfWordReader.prefs.';
   const GUEST_ID = 'guest';
@@ -1031,6 +1039,7 @@
 
   const sourceSelect = $('sourceLang');
   const targetSelect = $('targetLang');
+  const voiceModeSelect = $('voiceMode');
   const textSizeInput = $('textSize');
   const sizeValue = $('sizeValue');
   const statusEl = $('status');
@@ -1816,6 +1825,9 @@
   document.addEventListener('keydown', primeAudio, { capture: true });
 
   function stopSpeech() {
+    // Invalidate any natural-voice audio that is still being generated.
+    speechSeq++;
+    stopNeuralSource();
     if (currentAudio) {
       const audio = currentAudio;
       currentAudio = null;
@@ -1910,18 +1922,448 @@
     if (played && typeof played.catch === 'function') played.catch(fail);
   }
 
+  /* ---------------- Natural (neural) voice ---------------- */
+
+  // Piper voices run entirely in the browser through ONNX Runtime. The voice model
+  // and the phonemizer are downloaded once (about 100 MB per language), then cached
+  // by the browser, so later visits are instant and work offline. Nothing is sent to
+  // a server: the text never leaves the device.
+  const VOICE_ASKED_KEY = 'pdfWordReader.voiceAsked';
+  const NEURAL_CACHE = 'pdfWordReaderTtsV1';
+  const NEURAL_BASE = 'https://huggingface.co/diffusionstudio/piper-voices/resolve/main/';
+  const NEURAL_PHONEMIZE_JS = 'https://cdn.jsdelivr.net/npm/@diffusionstudio/piper-wasm@1.0.0/build/piper_phonemize.js';
+  const NEURAL_PHONEMIZE_DATA = 'https://cdn.jsdelivr.net/npm/@diffusionstudio/piper-wasm@1.0.0/build/piper_phonemize.data';
+  const NEURAL_PHONEMIZE_WASM = 'https://cdn.jsdelivr.net/npm/@diffusionstudio/piper-wasm@1.0.0/build/piper_phonemize.wasm';
+  const NEURAL_ORT_JS = 'https://esm.sh/onnxruntime-web@1.31.1/wasm';
+  const NEURAL_ORT_WASM = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.31.1/dist/';
+  const NEURAL_VOICES = {
+    fr: 'fr/fr_FR/siwis/medium/fr_FR-siwis-medium',
+    en: 'en/en_US/lessac/medium/en_US-lessac-medium',
+    es: 'es/es_ES/davefx/medium/es_ES-davefx-medium',
+    de: 'de/de_DE/thorsten/medium/de_DE-thorsten-medium',
+    it: 'it/it_IT/paola/medium/it_IT-paola-medium',
+    pt: 'pt/pt_BR/faber/medium/pt_BR-faber-medium'
+  };
+
+  const neural = {
+    lang: null,
+    ready: false,
+    loadId: 0,
+    loading: null,
+    session: null,
+    config: null,
+    phonemizer: null,
+    phonemizerPromise: null,
+    ort: null,
+    printSink: null,
+    queue: Promise.resolve(),
+    audioCache: new Map(),
+    lastPaint: 0,
+    asking: false
+  };
+
+  let speechSeq = 0;
+
+  function languageName(code) {
+    const match = ALL_LANGS.find((lang) => lang.code === code);
+    return match ? match.en : code;
+  }
+
+  function loadVoiceMode() {
+    let mode = 'natural';
+    try { mode = localStorage.getItem(VOICE_MODE_KEY) || 'natural'; } catch (e) { mode = 'natural'; }
+    voiceModeSelect.value = mode === 'google' ? 'google' : 'natural';
+  }
+
+  function saveVoiceMode() {
+    try { localStorage.setItem(VOICE_MODE_KEY, voiceModeSelect.value); } catch (e) { /* ignore */ }
+  }
+
+  function markVoiceAsked(lang) {
+    try { localStorage.setItem(VOICE_ASKED_KEY + '.' + lang, '1'); } catch (e) { /* ignore */ }
+  }
+
+  function shouldAskForVoice(lang) {
+    try { return localStorage.getItem(VOICE_ASKED_KEY + '.' + lang) !== '1'; } catch (e) { return true; }
+  }
+
+  // Cache Storage keeps the big voice files on the device. If it is unavailable
+  // (private mode, old browser) the download still works, it just repeats next time.
+  async function openNeuralCache() {
+    try {
+      if (typeof caches === 'undefined') return null;
+      return await caches.open(NEURAL_CACHE);
+    } catch (e) { return null; }
+  }
+
+  async function fetchNeural(url, onProgress) {
+    const cache = await openNeuralCache();
+    if (cache) {
+      try {
+        const hit = await cache.match(url);
+        if (hit) {
+          if (onProgress) onProgress(1);
+          return hit;
+        }
+      } catch (e) { /* ignore */ }
+    }
+    const response = await fetch(url);
+    if (!response.ok) throw new Error('Download failed (' + response.status + ').');
+    const total = Number(response.headers.get('content-length') || 0);
+    if (!response.body || !total || typeof response.body.getReader !== 'function') {
+      const blob = await response.blob();
+      if (cache) { try { await cache.put(url, new Response(blob, { headers: { 'content-type': blob.type || 'application/octet-stream' } })); } catch (e) { /* ignore */ } }
+      if (onProgress) onProgress(1);
+      return new Response(blob);
+    }
+    const reader = response.body.getReader();
+    const chunks = [];
+    let received = 0;
+    while (true) {
+      const step = await reader.read();
+      if (step.done) break;
+      chunks.push(step.value);
+      received += step.value.length;
+      if (onProgress) onProgress(Math.min(1, received / total));
+    }
+    const blob = new Blob(chunks, { type: response.headers.get('content-type') || 'application/octet-stream' });
+    if (cache) {
+      try {
+        await cache.put(url, new Response(blob, {
+          headers: { 'content-type': blob.type, 'content-length': String(blob.size) }
+        }));
+      } catch (e) { /* ignore */ }
+    }
+    return new Response(blob, { headers: { 'content-type': blob.type } });
+  }
+
+  function loadPiperScript() {
+    if (typeof window.createPiperPhonemize === 'function') return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = NEURAL_PHONEMIZE_JS;
+      script.async = true;
+      script.onload = () => resolve();
+      script.onerror = () => reject(new Error('Could not load the speech engine.'));
+      document.head.appendChild(script);
+    });
+  }
+
+  // The phonemizer is expensive to start (espeak-ng data), so it is created once
+  // and reused for every word. That is what makes the natural voice feel instant.
+  function getPhonemizer() {
+    if (neural.phonemizer) return Promise.resolve(neural.phonemizer);
+    if (neural.phonemizerPromise) return neural.phonemizerPromise;
+    neural.phonemizerPromise = (async () => {
+      await loadPiperScript();
+      const factory = window.createPiperPhonemize;
+      if (typeof factory !== 'function') throw new Error('The speech engine did not start.');
+      const module = await factory({
+        print: (data) => {
+          const sink = neural.printSink;
+          neural.printSink = null;
+          if (sink) sink(data);
+        },
+        printErr: () => { /* espeak warnings are harmless */ },
+        locateFile: (url) => {
+          if (url.endsWith('.wasm')) return NEURAL_PHONEMIZE_WASM;
+          if (url.endsWith('.data')) return NEURAL_PHONEMIZE_DATA;
+          return url;
+        }
+      });
+      neural.phonemizer = module;
+      return module;
+    })();
+    neural.phonemizerPromise.catch(() => { neural.phonemizerPromise = null; });
+    return neural.phonemizerPromise;
+  }
+
+  function neuralProgress(lang, fraction, label) {
+    const percent = Math.max(0, Math.min(100, Math.round(fraction * 100)));
+    const now = Date.now();
+    if (percent < 100 && now - neural.lastPaint < 350) return;
+    neural.lastPaint = now;
+    setStatus('Natural ' + languageName(lang) + ' voice: ' + label + ' ' + percent +
+      '%. Google voice works meanwhile.', 'loading');
+  }
+
+  async function prepareNeural(lang) {
+    if (neural.ready && neural.lang === lang) return neural;
+    if (neural.loading && neural.lang === lang) return neural.loading;
+    const path = NEURAL_VOICES[lang];
+    if (!path) return null;
+
+    const loadId = ++neural.loadId;
+    neural.lang = lang;
+    neural.ready = false;
+    if (neural.session) {
+      try { neural.session.release(); } catch (e) { /* ignore */ }
+      neural.session = null;
+    }
+
+    const job = (async () => {
+      neuralProgress(lang, 0, 'starting');
+      const [configResponse, modelResponse] = await Promise.all([
+        fetchNeural(NEURAL_BASE + path + '.onnx.json'),
+        fetchNeural(NEURAL_BASE + path + '.onnx', (p) => neuralProgress(lang, p * 0.6, 'voice model'))
+      ]);
+      const config = await configResponse.json();
+      const model = await modelResponse.arrayBuffer();
+      if (loadId !== neural.loadId) return null;
+
+      neuralProgress(lang, 0.62, 'speech engine');
+      const [ortModule, phonemizer] = await Promise.all([
+        neural.ort ? Promise.resolve(neural.ort) : import(NEURAL_ORT_JS).then((mod) => mod.default || mod),
+        getPhonemizer()
+      ]);
+      if (loadId !== neural.loadId) return null;
+      neural.ort = ortModule;
+      neural.phonemizer = phonemizer;
+      try {
+        // GitHub Pages cannot send the cross-origin isolation headers that shared
+        // memory needs, so stay on one thread. It is still fast for single words.
+        ortModule.env.wasm.numThreads = 1;
+        ortModule.env.wasm.wasmPaths = NEURAL_ORT_WASM;
+      } catch (e) { /* ignore */ }
+
+      neuralProgress(lang, 0.9, 'starting the voice');
+      const session = await ortModule.InferenceSession.create(model, {
+        executionProviders: ['wasm'],
+        graphOptimizationLevel: 'all'
+      });
+      if (loadId !== neural.loadId) {
+        try { session.release(); } catch (e) { /* ignore */ }
+        return null;
+      }
+
+      neural.session = session;
+      neural.config = config;
+      neural.ready = true;
+      neural.audioCache.clear();
+      setStatus('Natural ' + languageName(lang) + ' voice is ready. Tap a word to hear it.', 'success');
+      return neural;
+    })();
+
+    neural.loading = job;
+    try { await job; } finally { if (neural.loading === job) neural.loading = null; }
+    return neural;
+  }
+
+  function startNeural(lang) {
+    if (!NEURAL_VOICES[lang]) return;
+    if (neural.ready && neural.lang === lang) return;
+    if (neural.loading && neural.lang === lang) return;
+    prepareNeural(lang).catch((error) => {
+      neural.ready = false;
+      setStatus('The natural voice could not start (' +
+        (error && error.message ? error.message : 'unknown error') +
+        '). The Google voice will be used.', 'error');
+    });
+  }
+
+  function phonemizeNeural(text, config) {
+    const run = neural.queue.then(() => new Promise((resolve, reject) => {
+      const module = neural.phonemizer;
+      if (!module) { reject(new Error('The speech engine is not ready.')); return; }
+      let settled = false;
+      const finish = (value, error) => {
+        if (settled) return;
+        settled = true;
+        neural.printSink = null;
+        if (error) reject(error); else resolve(value);
+      };
+      neural.printSink = (data) => {
+        try { finish(JSON.parse(data).phoneme_ids || []); }
+        catch (e) { finish(null, e); }
+      };
+      try {
+        module.callMain([
+          '-l', config.espeak.voice,
+          '--input', JSON.stringify([{ text }]),
+          '--espeak_data', '/espeak-ng-data'
+        ]);
+      } catch (e) { finish(null, e); }
+      setTimeout(() => finish(null, new Error('The speech engine timed out.')), 12000);
+    }));
+    neural.queue = run.catch(() => { /* keep the queue moving */ });
+    return run;
+  }
+
+  function pcmToWav(pcm, sampleRate) {
+    const buffer = new ArrayBuffer(44 + pcm.length * 2);
+    const view = new DataView(buffer);
+    const writeText = (offset, text) => {
+      for (let i = 0; i < text.length; i++) view.setUint8(offset + i, text.charCodeAt(i));
+    };
+    writeText(0, 'RIFF');
+    view.setUint32(4, 36 + pcm.length * 2, true);
+    writeText(8, 'WAVE');
+    writeText(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    writeText(36, 'data');
+    view.setUint32(40, pcm.length * 2, true);
+    let offset = 44;
+    for (let i = 0; i < pcm.length; i++, offset += 2) {
+      const sample = Math.max(-1, Math.min(1, pcm[i]));
+      view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+    }
+    return new Blob([buffer], { type: 'audio/wav' });
+  }
+
+  async function neuralBlob(text, lang) {
+    const key = lang + '\u0000' + text;
+    const cached = neural.audioCache.get(key);
+    if (cached) return cached;
+    const config = neural.config;
+    const session = neural.session;
+    if (!config || !session) return null;
+
+    const ids = await phonemizeNeural(text, config);
+    if (!ids.length) return null;
+
+    const ort = neural.ort;
+    const length = ids.length;
+    const input = new ort.Tensor('int64', BigInt64Array.from(ids.map(BigInt)), [1, length]);
+    const lengths = new ort.Tensor('int64', BigInt64Array.from([BigInt(length)]), [1]);
+    const scales = new ort.Tensor('float32', Float32Array.from([
+      config.inference.noise_scale,
+      config.inference.length_scale,
+      config.inference.noise_w
+    ]), [3]);
+    const names = session.inputNames && session.inputNames.length >= 3
+      ? session.inputNames
+      : ['input', 'input_lengths', 'scales'];
+    const feeds = {};
+    feeds[names.includes('input') ? 'input' : names[0]] = input;
+    feeds[names.includes('input_lengths') ? 'input_lengths' : names[1]] = lengths;
+    feeds[names.includes('scales') ? 'scales' : names[2]] = scales;
+
+    const output = await session.run(feeds);
+    const outName = (session.outputNames && session.outputNames[0]) || 'output';
+    const result = output[outName] || output.output || Object.values(output)[0];
+    if (!result) return null;
+
+    const blob = pcmToWav(result.data, config.audio.sample_rate);
+    if (neural.audioCache.size >= 300) neural.audioCache.clear();
+    neural.audioCache.set(key, blob);
+    return blob;
+  }
+
+  function playBlob(blob, onFail) {
+    let audio;
+    try { audio = new Audio(); } catch (e) { if (onFail) onFail(); return; }
+    const url = URL.createObjectURL(blob);
+    let settled = false;
+    const cleanup = () => { try { URL.revokeObjectURL(url); } catch (e) { /* ignore */ } };
+    const fail = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (currentAudio === audio) currentAudio = null;
+      if (onFail) onFail();
+    };
+    audio.preload = 'auto';
+    audio.setAttribute('playsinline', '');
+    audio.src = url;
+    audio.addEventListener('error', fail, { once: true });
+    audio.addEventListener('playing', () => { settled = true; }, { once: true });
+    audio.addEventListener('ended', cleanup, { once: true });
+    currentAudio = audio;
+    const played = audio.play();
+    if (played && typeof played.catch === 'function') played.catch(fail);
+  }
+
+  let currentNeuralSource = null;
+
+  function stopNeuralSource() {
+    if (!currentNeuralSource) return;
+    try { currentNeuralSource.stop(); } catch (e) { /* ignore */ }
+    try { currentNeuralSource.disconnect(); } catch (e) { /* ignore */ }
+    currentNeuralSource = null;
+  }
+
+  // The natural voice is generated a moment after the tap, so play it through the
+  // AudioContext that the first tap already unlocked. That keeps it working on iOS,
+  // where a delayed HTMLAudio play() can be blocked.
+  async function playNeural(blob, onFail) {
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) { playBlob(blob, onFail); return; }
+      if (!audioContext) audioContext = new Ctx();
+      if (audioContext.state === 'suspended') {
+        try { await audioContext.resume(); } catch (e) { /* ignore */ }
+      }
+      if (audioContext.state !== 'running') { playBlob(blob, onFail); return; }
+      const data = await blob.arrayBuffer();
+      const buffer = await new Promise((resolve, reject) => {
+        const maybe = audioContext.decodeAudioData(data, resolve, reject);
+        if (maybe && typeof maybe.then === 'function') maybe.then(resolve, reject);
+      });
+      stopNeuralSource();
+      const source = audioContext.createBufferSource();
+      source.buffer = buffer;
+      source.connect(audioContext.destination);
+      source.onended = () => { if (currentNeuralSource === source) currentNeuralSource = null; };
+      currentNeuralSource = source;
+      source.start();
+    } catch (e) {
+      if (onFail) onFail();
+    }
+  }
+
   function speakText(text, langCode) {
     const clean = String(text || '').trim();
     if (!clean) return;
     stopSpeech();
+    const seq = speechSeq;
     const lang = serviceLang(langCode);
     const voiceLang = speechLang(langCode);
+    const google = () => playGoogleAudio(clean, lang, () => speakFallback(clean, voiceLang));
 
-    // Google's recorded voice sounds far more natural than the built-in one, so it
-    // goes first everywhere. On iOS it still starts inside the tap, and the audio
-    // session is set to "playback" so the Silent switch cannot mute it. The device
-    // voice stays as the fallback if the file cannot load.
-    playGoogleAudio(clean, lang, () => speakFallback(clean, voiceLang));
+    if (voiceModeSelect.value !== 'natural' || !NEURAL_VOICES[lang]) {
+      // Google's recorded voice is the instant, always-available option, and the
+      // only one for languages that do not have a natural voice yet.
+      google();
+      return;
+    }
+
+    if (neural.ready && neural.lang === lang) {
+      neuralBlob(clean, lang).then((blob) => {
+        if (seq !== speechSeq) return;
+        if (!blob) { google(); return; }
+        playNeural(blob, () => { if (seq === speechSeq) google(); });
+      }).catch(() => { if (seq === speechSeq) google(); });
+      return;
+    }
+
+    // First use: speak instantly with Google, then offer the one-time download.
+    google();
+    if (neural.loading && neural.lang === lang) return;
+    if (neural.asking) return;
+    if (shouldAskForVoice(lang)) {
+      neural.asking = true;
+      setTimeout(() => {
+        neural.asking = false;
+        const ok = window.confirm('Download the natural ' + languageName(lang) +
+          ' voice? It is about 100 MB, one time only, and stays on this device.');
+        if (ok) {
+          markVoiceAsked(lang);
+          startNeural(lang);
+        } else {
+          voiceModeSelect.value = 'google';
+          saveVoiceMode();
+          setStatus('Using the Google voice. You can switch to Natural in the Voice menu.');
+        }
+      }, 350);
+      return;
+    }
+    startNeural(lang);
   }
 
   if ('speechSynthesis' in window) {
@@ -3185,6 +3627,29 @@
     savePrefs();
   });
 
+  voiceModeSelect.addEventListener('change', () => {
+    saveVoiceMode();
+    if (voiceModeSelect.value !== 'natural') {
+      setStatus('Using the Google voice.');
+      return;
+    }
+    const lang = sourceSelect.value;
+    if (!NEURAL_VOICES[lang]) {
+      setStatus('There is no natural voice for ' + languageName(lang) +
+        ' yet, so the Google voice will be used.');
+      return;
+    }
+    if (neural.ready && neural.lang === lang) {
+      setStatus('Natural ' + languageName(lang) + ' voice is ready.');
+      return;
+    }
+    if (shouldAskForVoice(lang)) {
+      setStatus('Tap a word to start the one-time natural ' + languageName(lang) + ' voice download.');
+      return;
+    }
+    startNeural(lang);
+  });
+
   textSizeInput.addEventListener('input', () => {
     applyTextSize(textSizeInput.value);
     savePrefs();
@@ -3299,6 +3764,7 @@
 
   loadCurrentProfile();
   loadPrefs();
+  loadVoiceMode();
   loadSavedWords();
   updateAccountButton();
   updateStorageNotes();
