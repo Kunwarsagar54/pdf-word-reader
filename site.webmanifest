@@ -1,0 +1,31 @@
+{
+  "name": "PDF Word Reader",
+  "short_name": "Word Reader",
+  "description": "Read French PDF books in your browser. Tap a word for an instant translation and pronunciation, select a phrase, save words, and pick up where you stopped.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f7f1e7",
+  "theme_color": "#f7f1e7",
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "apple-touch-icon.png",
+      "sizes": "180x180",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}
