@@ -1,0 +1,3171 @@
+<!doctype html>
+<!--
+  PDF Word Reader - a single-file, browser-only French reading app.
+
+  External services and what they are for:
+  - PDF.js from cdnjs: parses the PDF locally in the browser.
+  - Google Identity Services: optional Google sign-in. It returns an ID token that is
+    decoded locally to create a profile. There is no app server and no token verification.
+  - Browser Translator API: on-device translation when the browser supports it.
+  - Claude artifact runtime (window.claude): optional translation when this page is embedded
+    in a compatible artifact runtime.
+  - Google Translate endpoints (clients5.google.com, translate.googleapis.com): translation
+    and dictionary data. Google is tried first because it is fast and returns the word senses
+    needed to pick the right meaning from context.
+  - MyMemory (api.mymemory.translated.net): last-resort translation endpoint.
+  - translate.google.com/translate_tts: recorded pronunciation audio.
+  - Web Speech API (speechSynthesis): device-voice fallback for pronunciation.
+
+  PDFs never leave the browser. The text you tap or select may be sent to the translation
+  service that handles the request. Translation and pronunciation depend on the device,
+  browser support, and network. Google sign-in needs your own OAuth Client ID.
+
+  Profiles keep separate libraries on this browser only. They are not encrypted, not synced,
+  and are not a security boundary: anyone with access to this browser can switch profiles.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>PDF Word Reader</title>
+<meta name="description" content="Read French PDF books on any device. Tap a word for translation and pronunciation, select a phrase, save words, and resume where you stopped." />
+<meta name="theme-color" content="#f7f1e7" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23b5542d'/%3E%3Ctext x='16' y='23' font-family='Georgia,serif' font-size='17' fill='white' text-anchor='middle'%3Ea%3C/text%3E%3C/svg%3E" />
+<script>
+(function () {
+  try {
+    var saved = localStorage.getItem('pdfWordReader.theme');
+    var dark = saved ? saved === 'dark' : (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  } catch (e) {
+    document.documentElement.dataset.theme = 'light';
+  }
+})();
+</script>
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #f7f1e7;
+    --bg-elevated: #fffaf2;
+    --card: #fffdf8;
+    --card-2: #f4ecdf;
+    --text: #2f2822;
+    --muted: #786b5d;
+    --faint: #a99b8b;
+    --border: #e3d7c6;
+    --border-strong: #d5c5b0;
+    --accent: #b5542d;
+    --accent-hover: #9d4524;
+    --accent-soft: #f3d7c8;
+    --accent-contrast: #fffaf5;
+    --danger: #a33131;
+    --danger-soft: #f7dede;
+    --success: #356b4a;
+    --shadow: 0 18px 50px rgba(78, 54, 34, 0.14);
+    --shadow-sm: 0 4px 14px rgba(78, 54, 34, 0.09);
+    --backdrop: rgba(38, 29, 21, 0.35);
+    --header-bg: rgba(247, 241, 231, 0.9);
+    --focus: #2b6cb0;
+    --book-font-size: 19px;
+  }
+
+  html[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #191613;
+    --bg-elevated: #211d19;
+    --card: #26211c;
+    --card-2: #2f2923;
+    --text: #efe7db;
+    --muted: #b6a999;
+    --faint: #8c8074;
+    --border: #3b332b;
+    --border-strong: #4a4036;
+    --accent: #e08a5c;
+    --accent-hover: #f0a074;
+    --accent-soft: #4a2d1f;
+    --accent-contrast: #1d1612;
+    --danger: #ff9d9d;
+    --danger-soft: #3a2020;
+    --success: #9ed7b2;
+    --shadow: 0 18px 50px rgba(0, 0, 0, 0.4);
+    --shadow-sm: 0 4px 14px rgba(0, 0, 0, 0.28);
+    --backdrop: rgba(0, 0, 0, 0.55);
+    --header-bg: rgba(25, 22, 19, 0.9);
+    --focus: #7cb3ff;
+  }
+
+  * { box-sizing: border-box; }
+
+  html { -webkit-text-size-adjust: 100%; }
+
+  body {
+    margin: 0;
+    min-height: 100dvh;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.45;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  body.panel-open,
+  body.modal-open { overflow: hidden; }
+
+  button, input, select { font: inherit; }
+
+  button { cursor: pointer; }
+
+  button:disabled { cursor: not-allowed; opacity: 0.55; }
+
+  :focus-visible {
+    outline: 3px solid var(--focus);
+    outline-offset: 2px;
+  }
+
+  .hidden { display: none !important; }
+
+  .skip {
+    position: absolute;
+    left: -9999px;
+    top: 0;
+    z-index: 300;
+    background: var(--accent);
+    color: var(--accent-contrast);
+    padding: 10px 14px;
+    border-radius: 0 0 10px 0;
+  }
+  .skip:focus { left: 0; }
+
+  .topbar {
+    position: sticky;
+    top: 0;
+    z-index: 40;
+    background: var(--header-bg);
+    border-bottom: 1px solid var(--border);
+    -webkit-backdrop-filter: blur(14px);
+    backdrop-filter: blur(14px);
+  }
+
+  .topbar-inner {
+    max-width: 1240px;
+    margin: 0 auto;
+    padding: 9px 16px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .topbar-main {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: 34px;
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    font-weight: 750;
+    letter-spacing: -0.02em;
+    font-size: 16px;
+  }
+
+  .brand-mark {
+    width: 32px;
+    height: 32px;
+    flex: 0 0 auto;
+    border-radius: 9px;
+    display: grid;
+    place-items: center;
+    background: linear-gradient(145deg, var(--accent), #7c351b);
+    color: #fff8ef;
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: 19px;
+    box-shadow: var(--shadow-sm);
+  }
+
+  .brand-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .brand-text small {
+    display: block;
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+
+  .topbar-actions { display: flex; align-items: center; gap: 8px; }
+
+  .toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-height: 34px;
+    padding: 7px 11px;
+    border: 1px solid var(--border-strong);
+    border-radius: 10px;
+    background: var(--card);
+    color: var(--text);
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.2;
+    text-decoration: none;
+    white-space: nowrap;
+    transition: background 0.16s ease, border-color 0.16s ease, transform 0.16s ease;
+  }
+  .btn:hover { background: var(--card-2); }
+  .btn:active { transform: translateY(1px); }
+
+  .btn-primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--accent-contrast);
+  }
+  .btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+
+  .btn-danger {
+    color: var(--danger);
+    border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
+    background: var(--danger-soft);
+  }
+  .btn-danger:hover { background: color-mix(in srgb, var(--danger-soft) 75%, var(--card)); }
+
+  .btn-sm { min-height: 30px; padding: 5px 9px; font-size: 12px; }
+
+  .icon-btn {
+    width: 34px;
+    height: 34px;
+    padding: 0;
+    border: 1px solid var(--border-strong);
+    border-radius: 10px;
+    background: var(--card);
+    color: var(--text);
+    display: grid;
+    place-items: center;
+    font-size: 16px;
+    line-height: 1;
+  }
+  .icon-btn:hover { background: var(--card-2); }
+
+  .account-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 34px;
+    padding: 4px 10px 4px 4px;
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    background: var(--card);
+    color: var(--text);
+    font-size: 13px;
+    font-weight: 650;
+    max-width: 190px;
+  }
+  .account-btn:hover { background: var(--card-2); }
+
+  .avatar {
+    width: 26px;
+    height: 26px;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-size: 12px;
+    font-weight: 800;
+    text-transform: uppercase;
+  }
+  .avatar.lg { width: 48px; height: 48px; font-size: 19px; }
+
+  .account-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .field {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 34px;
+    font-size: 12px;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+
+  .field select,
+  .field input[type="text"],
+  .field input[type="email"] {
+    min-height: 32px;
+    padding: 5px 8px;
+    border: 1px solid var(--border-strong);
+    border-radius: 9px;
+    background: var(--card);
+    color: var(--text);
+    font-size: 13px;
+  }
+
+  .size-field input[type="range"] {
+    width: 92px;
+    accent-color: var(--accent);
+  }
+
+  .size-value {
+    min-width: 34px;
+    font-variant-numeric: tabular-nums;
+    color: var(--text);
+    font-size: 12px;
+  }
+
+  main {
+    max-width: 1020px;
+    margin: 0 auto;
+    padding: 14px 16px 90px;
+  }
+
+  .status {
+    max-width: 860px;
+    margin: 0 auto 12px;
+    padding: 8px 12px;
+    border: 1px solid transparent;
+    border-radius: 10px;
+    color: var(--muted);
+    font-size: 13px;
+    min-height: 36px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .status.error {
+    color: var(--danger);
+    background: var(--danger-soft);
+    border-color: color-mix(in srgb, var(--danger) 28%, transparent);
+  }
+  .status.success {
+    color: var(--success);
+    background: color-mix(in srgb, var(--success) 10%, var(--bg));
+    border-color: color-mix(in srgb, var(--success) 25%, transparent);
+  }
+  .status.loading::before {
+    content: "";
+    width: 12px;
+    height: 12px;
+    flex: 0 0 auto;
+    border: 2px solid var(--border-strong);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.75s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .error-box {
+    max-width: 760px;
+    margin: 0 auto 14px;
+    padding: 12px 14px;
+    border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+    border-radius: 12px;
+    background: var(--danger-soft);
+    color: var(--danger);
+    font-size: 14px;
+  }
+
+  .empty-state {
+    max-width: 700px;
+    margin: 36px auto 0;
+    padding: 34px 28px;
+    border: 1px solid var(--border);
+    border-radius: 22px;
+    background: var(--card);
+    box-shadow: var(--shadow-sm);
+    text-align: center;
+  }
+  .empty-icon { font-size: 38px; line-height: 1; margin-bottom: 12px; }
+  .empty-state h1 {
+    margin: 0 0 8px;
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: clamp(24px, 5vw, 34px);
+    line-height: 1.15;
+    letter-spacing: -0.02em;
+  }
+  .empty-state p { margin: 8px auto; max-width: 52ch; color: var(--muted); font-size: 14px; }
+  .empty-actions { display: flex; justify-content: center; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+  .empty-list {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+    margin: 22px 0 0;
+    padding: 0;
+    list-style: none;
+    text-align: left;
+  }
+  .empty-list li {
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--bg-elevated);
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .empty-list strong { display: block; color: var(--text); font-size: 13px; margin-bottom: 3px; }
+  .profile-hint { margin-top: 18px !important; font-size: 12px !important; }
+
+  /* Book */
+  .book { max-width: 780px; margin: 0 auto; }
+  .page-card {
+    margin: 0 0 22px;
+    padding: 30px clamp(18px, 5vw, 46px) 34px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    box-shadow: var(--shadow-sm);
+    scroll-margin-top: 120px;
+  }
+  .page-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 20px;
+    color: var(--faint);
+    font-size: 10px;
+    font-weight: 750;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+  }
+  .page-label::after { content: ""; height: 1px; flex: 1; background: var(--border); }
+
+  .page-text {
+    font-family: Georgia, "Iowan Old Style", "Palatino Linotype", "Times New Roman", serif;
+    font-size: var(--book-font-size);
+    line-height: 1.72;
+    letter-spacing: 0.002em;
+    overflow-wrap: break-word;
+  }
+
+  .line { white-space: pre-wrap; }
+  .line-spacer { height: 0.82em; }
+  .page-empty { color: var(--faint); font-style: italic; font-size: 14px; }
+
+  .word {
+    border-radius: 3px;
+    cursor: pointer;
+    -webkit-box-decoration-break: clone;
+    box-decoration-break: clone;
+    transition: background 0.12s ease, box-shadow 0.12s ease;
+  }
+  .word:hover { background: var(--accent-soft); }
+  .word.active {
+    background: var(--accent-soft);
+    box-shadow: 0 0 0 2px var(--accent-soft);
+  }
+
+  ::selection { background: var(--accent-soft); color: var(--text); }
+
+  /* Slide-in panels */
+  .backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 65;
+    background: var(--backdrop);
+    -webkit-backdrop-filter: blur(2px);
+    backdrop-filter: blur(2px);
+  }
+
+  .panel {
+    position: fixed;
+    top: 0;
+    right: 0;
+    z-index: 70;
+    width: min(430px, 100vw);
+    height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-elevated);
+    border-left: 1px solid var(--border);
+    box-shadow: var(--shadow);
+    transform: translateX(102%);
+    transition: transform 0.24s ease;
+    visibility: hidden;
+  }
+  .panel.open { transform: translateX(0); visibility: visible; }
+
+  .panel-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 18px 18px 10px;
+    border-bottom: 1px solid var(--border);
+  }
+  .panel-head h2 { margin: 0; font-size: 19px; letter-spacing: -0.02em; }
+  .panel-head h2 span { color: var(--muted); font-weight: 500; }
+
+  .panel-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 12px 18px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .panel-list {
+    flex: 1;
+    overflow: auto;
+    overscroll-behavior: contain;
+    padding: 12px 18px 24px;
+  }
+
+  .panel-note {
+    margin: 10px 18px 0;
+    padding: 9px 11px;
+    border-radius: 9px;
+    background: var(--danger-soft);
+    color: var(--danger);
+    font-size: 12px;
+  }
+
+  .panel-empty {
+    padding: 28px 10px;
+    text-align: center;
+    color: var(--muted);
+    font-size: 14px;
+  }
+
+  .word-item,
+  .book-item {
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .word-item:last-child,
+  .book-item:last-child { border-bottom: 0; }
+
+  .word-item-top,
+  .book-item-top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+  }
+
+  .word-title {
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: 18px;
+    font-weight: 700;
+    overflow-wrap: anywhere;
+  }
+  .word-translation { margin-top: 2px; font-size: 14px; color: var(--text); }
+  .word-pair { margin-top: 3px; font-size: 11px; color: var(--faint); text-transform: uppercase; letter-spacing: 0.06em; }
+
+  .book-title {
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+  }
+  .book-meta { margin: 4px 0 0; font-size: 12px; color: var(--muted); }
+  .book-actions { display: flex; gap: 7px; margin-top: 10px; }
+
+  /* Translation popup */
+  .popup {
+    position: fixed;
+    z-index: 80;
+    width: min(352px, calc(100vw - 20px));
+    max-height: calc(100dvh - 100px);
+    overflow: auto;
+    padding: 16px;
+    background: var(--card);
+    border: 1px solid var(--border-strong);
+    border-radius: 16px;
+    box-shadow: var(--shadow);
+  }
+
+  .popup-close {
+    position: absolute;
+    top: 7px;
+    right: 7px;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--muted);
+    font-size: 22px;
+    line-height: 1;
+  }
+  .popup-close:hover { background: var(--card-2); color: var(--text); }
+
+  .popup-word {
+    padding-right: 28px;
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: 22px;
+    font-weight: 700;
+    line-height: 1.25;
+    overflow-wrap: anywhere;
+  }
+  .popup-pair {
+    margin-top: 4px;
+    color: var(--faint);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+  .popup-translation {
+    margin-top: 12px;
+    font-size: 24px;
+    font-weight: 750;
+    line-height: 1.25;
+    letter-spacing: -0.01em;
+    overflow-wrap: anywhere;
+  }
+  .popup-translation.loading { color: var(--muted); font-size: 15px; font-weight: 500; }
+  .popup-alt { margin-top: 5px; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+  .popup-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 14px; }
+  .popup-actions .btn { min-height: 32px; padding: 6px 9px; font-size: 12px; }
+  .popup-reasons {
+    margin-top: 10px;
+    padding-top: 9px;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+  }
+
+  /* Account modal */
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    display: grid;
+    place-items: center;
+    padding: 16px;
+    background: var(--backdrop);
+    -webkit-backdrop-filter: blur(3px);
+    backdrop-filter: blur(3px);
+  }
+
+  .modal {
+    position: relative;
+    width: min(540px, 100%);
+    max-height: calc(100dvh - 32px);
+    overflow: auto;
+    padding: 22px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    box-shadow: var(--shadow);
+  }
+  .modal h2 { margin: 0 0 14px; font-size: 22px; letter-spacing: -0.02em; }
+  .modal h3 { margin: 20px 0 8px; font-size: 14px; }
+  .modal p { color: var(--muted); font-size: 13px; }
+  .modal .tiny { font-size: 11px; line-height: 1.5; }
+
+  .account-current {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: var(--card);
+  }
+  .account-current-main { min-width: 0; flex: 1; }
+  .account-current-main strong { display: block; font-size: 15px; overflow-wrap: anywhere; }
+  .account-current-main span { display: block; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+
+  .badge {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 2px 6px;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    vertical-align: 1px;
+  }
+
+  .google-host {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    margin: 8px 0;
+  }
+
+  .google-config {
+    margin-top: 10px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 10px 12px;
+    background: var(--card);
+  }
+  .google-config summary { cursor: pointer; font-size: 12px; font-weight: 700; color: var(--text); }
+  .google-config p { margin: 8px 0; font-size: 11px; }
+
+  .inline-form {
+    display: flex;
+    gap: 7px;
+    align-items: stretch;
+    margin: 8px 0;
+  }
+  .inline-form input,
+  .local-form input {
+    flex: 1;
+    min-width: 0;
+    padding: 8px 10px;
+    border: 1px solid var(--border-strong);
+    border-radius: 9px;
+    background: var(--card);
+    color: var(--text);
+    font-size: 13px;
+  }
+
+  .local-form {
+    display: flex;
+    gap: 7px;
+    align-items: stretch;
+    margin-top: 8px;
+  }
+
+  .profiles-list { margin-top: 8px; }
+  .profile-row {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .profile-row:last-child { border-bottom: 0; }
+  .profile-row-main { flex: 1; min-width: 0; }
+  .profile-row-main strong { display: block; font-size: 13px; overflow-wrap: anywhere; }
+  .profile-row-main span { display: block; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+
+  .form-error { color: var(--danger) !important; font-size: 12px !important; }
+
+  .divider {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 16px 0;
+    color: var(--faint);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+  .divider::before,
+  .divider::after { content: ""; height: 1px; flex: 1; background: var(--border); }
+
+  /* Drag and drop */
+  .drop-overlay {
+    position: fixed;
+    inset: 12px;
+    z-index: 200;
+    display: none;
+    place-items: center;
+    border: 3px dashed var(--accent);
+    border-radius: 22px;
+    background: color-mix(in srgb, var(--bg) 82%, transparent);
+    color: var(--accent);
+    font-size: clamp(18px, 4vw, 30px);
+    font-weight: 750;
+    text-align: center;
+    padding: 24px;
+    pointer-events: none;
+    -webkit-backdrop-filter: blur(4px);
+    backdrop-filter: blur(4px);
+  }
+  body.dragging .drop-overlay { display: grid; }
+
+  @media (max-width: 760px) {
+    .topbar-inner { padding: 8px 12px 9px; }
+    .brand-text small { display: none; }
+    .toolbar {
+      flex-wrap: nowrap;
+      overflow-x: auto;
+      overscroll-behavior-x: contain;
+      scrollbar-width: none;
+      padding-bottom: 2px;
+    }
+    .toolbar::-webkit-scrollbar { display: none; }
+    main { padding: 12px 12px 80px; }
+    .empty-state { margin-top: 20px; padding: 26px 18px; }
+    .empty-list { grid-template-columns: 1fr; }
+    .page-card { padding: 24px 18px 28px; border-radius: 12px; }
+    .account-label { display: none; }
+    .account-btn { padding: 4px; }
+  }
+
+  @media (max-width: 520px) {
+    .panel { width: 100vw; border-left: 0; }
+    .modal { padding: 18px; border-radius: 16px; }
+    .inline-form, .local-form { flex-direction: column; }
+    .popup { width: calc(100vw - 16px); }
+    .status { font-size: 12px; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to book</a>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="topbar-main">
+      <div class="brand" aria-label="PDF Word Reader">
+        <span class="brand-mark" aria-hidden="true">a</span>
+        <span class="brand-text">PDF Word Reader<small>Tap. Translate. Listen.</small></span>
+      </div>
+      <div class="topbar-actions">
+        <button class="icon-btn" id="themeBtn" type="button" aria-label="Toggle theme" title="Toggle theme">🌙</button>
+        <button class="account-btn" id="accountBtn" type="button" aria-label="Account">
+          <span class="avatar" id="accountAvatar">?</span>
+          <span class="account-label" id="accountLabel">Sign in</span>
+        </button>
+      </div>
+    </div>
+
+    <div class="toolbar" aria-label="Reader controls">
+      <button class="btn btn-primary" id="openPdfBtn" type="button">Open PDF</button>
+      <button class="btn" id="libraryBtn" type="button">My books</button>
+
+      <label class="field" for="sourceLang">Book language
+        <select id="sourceLang" aria-label="Book language"></select>
+      </label>
+
+      <label class="field" for="targetLang">Translate to
+        <select id="targetLang" aria-label="Translate to"></select>
+      </label>
+
+      <label class="field size-field" for="textSize">Text size
+        <input id="textSize" type="range" min="15" max="30" step="1" value="19" aria-label="Book text size" />
+        <span class="size-value" id="sizeValue">19px</span>
+      </label>
+
+      <button class="btn" id="savedBtn" type="button">Saved words (0)</button>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+  <div class="status" id="status" role="status" aria-live="polite">Ready. Open a PDF to start reading.</div>
+  <div class="error-box hidden" id="errorBox" role="alert"></div>
+
+  <section class="empty-state" id="emptyState" aria-labelledby="emptyTitle">
+    <div class="empty-icon" aria-hidden="true">📖</div>
+    <h1 id="emptyTitle">Read a book, one word at a time.</h1>
+    <p>Open a French PDF and tap any word to see its translation and hear it. Select a phrase to translate the whole phrase. Your place is saved automatically.</p>
+    <div class="empty-actions">
+      <button class="btn btn-primary" id="emptyOpenBtn" type="button">Open a PDF</button>
+      <button class="btn" id="emptyLibraryBtn" type="button">My books</button>
+    </div>
+    <ul class="empty-list">
+      <li><strong>Tap a word</strong>Translation, alternatives, and pronunciation.</li>
+      <li><strong>Select a phrase</strong>Get a natural translation of the selection.</li>
+      <li><strong>Come back later</strong>Saved books and words stay on this device.</li>
+    </ul>
+    <p class="profile-hint" id="profileHint"></p>
+    <p class="profile-hint">Translation and pronunciation depend on your device, browser support, and network. Your PDF never leaves the browser.</p>
+  </section>
+
+  <div class="book" id="book" aria-label="Book text"></div>
+</main>
+
+<input type="file" id="fileInput" accept="application/pdf,.pdf" hidden />
+
+<div class="drop-overlay" id="dropOverlay" aria-hidden="true">Drop a PDF to open it</div>
+
+<div class="backdrop hidden" id="panelBackdrop"></div>
+
+<aside class="panel" id="wordsPanel" aria-hidden="true" aria-labelledby="wordsPanelTitle">
+  <div class="panel-head">
+    <h2 id="wordsPanelTitle">Saved words <span id="wordsPanelCount">(0)</span></h2>
+    <button class="icon-btn" id="closeWordsPanel" type="button" aria-label="Close saved words">×</button>
+  </div>
+  <div class="panel-actions">
+    <button class="btn btn-sm" id="exportWordsBtn" type="button">Export as .txt</button>
+    <button class="btn btn-sm btn-danger" id="clearWordsBtn" type="button">Clear</button>
+  </div>
+  <p class="panel-note hidden" id="wordsStorageNote">Storage is unavailable. Saved words may not persist after this session.</p>
+  <div class="panel-list" id="wordsList"></div>
+</aside>
+
+<aside class="panel" id="libraryPanel" aria-hidden="true" aria-labelledby="libraryPanelTitle">
+  <div class="panel-head">
+    <h2 id="libraryPanelTitle">My books</h2>
+    <button class="icon-btn" id="closeLibraryPanel" type="button" aria-label="Close my books">×</button>
+  </div>
+  <div class="panel-actions">
+    <button class="btn btn-sm btn-primary" id="addPdfBtn" type="button">Add a PDF</button>
+  </div>
+  <p class="panel-note hidden" id="libraryStorageNote">Storage is unavailable. Books cannot be saved on this device.</p>
+  <div class="panel-list" id="libraryList"></div>
+</aside>
+
+<div class="popup hidden" id="popup" role="dialog" aria-label="Translation" aria-live="polite">
+  <button class="popup-close" id="closePopupBtn" type="button" aria-label="Close translation">×</button>
+  <div class="popup-word" id="popupWord"></div>
+  <div class="popup-pair" id="popupPair"></div>
+  <div class="popup-translation" id="popupTranslation"></div>
+  <div class="popup-alt hidden" id="popupAlt"></div>
+  <div class="popup-actions">
+    <button class="btn" id="speakWordBtn" type="button">🔊 Word</button>
+    <button class="btn" id="speakTranslationBtn" type="button" disabled>🔊 Translation</button>
+    <button class="btn btn-primary" id="saveWordBtn" type="button" disabled>Save word</button>
+  </div>
+  <div class="popup-reasons hidden" id="popupReasons"></div>
+</div>
+
+<div class="modal-backdrop hidden" id="accountModal" aria-hidden="true">
+  <section class="modal" id="accountModalCard" role="dialog" aria-modal="true" aria-labelledby="accountTitle">
+    <button class="popup-close" id="closeAccountBtn" type="button" aria-label="Close account">×</button>
+    <h2 id="accountTitle">Your account</h2>
+    <div id="accountBody"></div>
+  </section>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script>
+/* App code starts here. */
+(function () {
+  'use strict';
+
+  const PDFJS_WORKER = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  const DB_NAME = 'pdfWordReader';
+  const DB_VERSION = 1;
+  const THEME_KEY = 'pdfWordReader.theme';
+  const PROFILES_KEY = 'pdfWordReader.profiles';
+  const CURRENT_USER_KEY = 'pdfWordReader.currentUser';
+  const GOOGLE_CLIENT_ID_KEY = 'pdfWordReader.googleClientId';
+  const WORDS_PREFIX = 'pdfWordReader.words.';
+  const PREFS_PREFIX = 'pdfWordReader.prefs.';
+  const GUEST_ID = 'guest';
+  const MAX_SELECTION = 300;
+
+  const SOURCE_LANGS = [
+    { code: 'fr', native: 'Français', en: 'French' },
+    { code: 'en', native: 'English', en: 'English' },
+    { code: 'es', native: 'Español', en: 'Spanish' },
+    { code: 'de', native: 'Deutsch', en: 'German' },
+    { code: 'it', native: 'Italiano', en: 'Italian' },
+    { code: 'pt', native: 'Português', en: 'Portuguese' }
+  ];
+
+  const TARGET_LANGS = [
+    { code: 'en', native: 'English', en: 'English' },
+    { code: 'fr', native: 'Français', en: 'French' },
+    { code: 'es', native: 'Español', en: 'Spanish' },
+    { code: 'de', native: 'Deutsch', en: 'German' },
+    { code: 'it', native: 'Italiano', en: 'Italian' },
+    { code: 'pt', native: 'Português', en: 'Portuguese' },
+    { code: 'ar', native: 'العربية', en: 'Arabic' },
+    { code: 'zh', native: '中文', en: 'Chinese' }
+  ];
+
+  const ALL_LANGS = SOURCE_LANGS.concat(TARGET_LANGS);
+
+  const VOICE_PREFS = {
+    fr: ['Google français', 'Amélie', 'Audrey', 'Thomas', 'Marie', 'Aurelie', 'Virginie'],
+    en: ['Google US English', 'Google UK English Female', 'Samantha', 'Daniel', 'Karen', 'Moira', 'Alex'],
+    es: ['Google español', 'Mónica', 'Monica', 'Paulina', 'Jorge', 'Diego'],
+    de: ['Google Deutsch', 'Anna', 'Petra', 'Markus', 'Yannick'],
+    it: ['Google italiano', 'Alice', 'Federica', 'Luca', 'Elsa'],
+    pt: ['Google português do Brasil', 'Luciana', 'Joana', 'Felipe', 'Ricardo'],
+    ar: ['Google العربية', 'Majed', 'Maged', 'Laila'],
+    zh: ['Google 普通话（中国大陆）', 'Ting-Ting', 'Sin-ji', 'Mei-Jia', 'Yu-shu']
+  };
+
+  const WORD_RE = /\p{L}+(?:['’\-]\p{L}+)*/gu;
+  const ELISION_RE = /^(jusqu|lorsqu|puisqu|quoiqu|qu|l|d|j|n|s|t|c|m)['’](.+)$/i;
+
+  const $ = (id) => document.getElementById(id);
+
+  const sourceSelect = $('sourceLang');
+  const targetSelect = $('targetLang');
+  const textSizeInput = $('textSize');
+  const sizeValue = $('sizeValue');
+  const statusEl = $('status');
+  const errorBox = $('errorBox');
+  const emptyState = $('emptyState');
+  const profileHint = $('profileHint');
+  const bookEl = $('book');
+  const fileInput = $('fileInput');
+  const openPdfBtn = $('openPdfBtn');
+  const emptyOpenBtn = $('emptyOpenBtn');
+  const libraryBtn = $('libraryBtn');
+  const emptyLibraryBtn = $('emptyLibraryBtn');
+  const savedBtn = $('savedBtn');
+  const themeBtn = $('themeBtn');
+  const accountBtn = $('accountBtn');
+  const accountAvatar = $('accountAvatar');
+  const accountLabel = $('accountLabel');
+  const panelBackdrop = $('panelBackdrop');
+  const wordsPanel = $('wordsPanel');
+  const libraryPanel = $('libraryPanel');
+  const wordsList = $('wordsList');
+  const libraryList = $('libraryList');
+  const wordsPanelCount = $('wordsPanelCount');
+  const wordsStorageNote = $('wordsStorageNote');
+  const libraryStorageNote = $('libraryStorageNote');
+  const exportWordsBtn = $('exportWordsBtn');
+  const clearWordsBtn = $('clearWordsBtn');
+  const popup = $('popup');
+  const popupWord = $('popupWord');
+  const popupPair = $('popupPair');
+  const popupTranslation = $('popupTranslation');
+  const popupAlt = $('popupAlt');
+  const popupReasons = $('popupReasons');
+  const speakWordBtn = $('speakWordBtn');
+  const speakTranslationBtn = $('speakTranslationBtn');
+  const saveWordBtn = $('saveWordBtn');
+  const accountModal = $('accountModal');
+  const accountModalCard = $('accountModalCard');
+  const accountBody = $('accountBody');
+  const dropOverlay = $('dropOverlay');
+
+  let currentProfile = null;
+  let savedWords = [];
+  let currentBook = null;
+  let isRendering = false;
+  let loadToken = 0;
+  let storageUnavailable = false;
+  let translationCache = new Map();
+  let translateSeq = 0;
+  let translationAbort = null;
+  let popupState = null;
+  let activeWordEl = null;
+  let saveTimer = null;
+  let statusFrame = 0;
+  let selectionTimer = null;
+  let currentAudio = null;
+  let bookDBPromise = null;
+  let googleWaitPromise = null;
+  let dragDepth = 0;
+
+  function esc(value) {
+    return String(value == null ? '' : value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function readRaw(key) {
+    try { return localStorage.getItem(key); } catch (e) { return null; }
+  }
+
+  function writeRaw(key, value) {
+    try { localStorage.setItem(key, value); return true; } catch (e) { markStorageUnavailable(); return false; }
+  }
+
+  function removeRaw(key) {
+    try { localStorage.removeItem(key); } catch (e) { markStorageUnavailable(); }
+  }
+
+  function readJSON(key, fallback) {
+    const raw = readRaw(key);
+    if (!raw) return fallback;
+    try {
+      const value = JSON.parse(raw);
+      return value == null ? fallback : value;
+    } catch (e) {
+      return fallback;
+    }
+  }
+
+  function writeJSON(key, value) {
+    return writeRaw(key, JSON.stringify(value));
+  }
+
+  function markStorageUnavailable() {
+    storageUnavailable = true;
+    updateStorageNotes();
+  }
+
+  function updateStorageNotes() {
+    wordsStorageNote.classList.toggle('hidden', !storageUnavailable);
+    libraryStorageNote.classList.toggle('hidden', !storageUnavailable);
+  }
+
+  function storagePrefix() {
+    return storageUnavailable ? 'Storage unavailable - this session may not be saved. ' : '';
+  }
+
+  function setStatus(text, kind) {
+    statusEl.textContent = text;
+    statusEl.className = 'status' + (kind ? ' ' + kind : '');
+  }
+
+  function showError(message) {
+    errorBox.textContent = message;
+    errorBox.classList.remove('hidden');
+  }
+
+  function hideError() {
+    errorBox.classList.add('hidden');
+    errorBox.textContent = '';
+  }
+
+  function langByCode(code) {
+    return ALL_LANGS.find((l) => l.code === code) || { code: code, native: code, en: code };
+  }
+
+  function langEn(code) {
+    return langByCode(code).en;
+  }
+
+  function serviceLang(code) {
+    return code === 'zh' ? 'zh-CN' : code;
+  }
+
+  function pairLabel(source, target) {
+    return langEn(source) + ' → ' + langEn(target);
+  }
+
+  function getOwnerId() {
+    return currentProfile ? currentProfile.id : GUEST_ID;
+  }
+
+  function wordsKey() {
+    return WORDS_PREFIX + encodeURIComponent(getOwnerId());
+  }
+
+  function prefsKey() {
+    return PREFS_PREFIX + encodeURIComponent(getOwnerId());
+  }
+
+  function populateLanguageSelects() {
+    sourceSelect.innerHTML = '';
+    targetSelect.innerHTML = '';
+    SOURCE_LANGS.forEach((lang) => {
+      const opt = document.createElement('option');
+      opt.value = lang.code;
+      opt.textContent = lang.native;
+      sourceSelect.appendChild(opt);
+    });
+    TARGET_LANGS.forEach((lang) => {
+      const opt = document.createElement('option');
+      opt.value = lang.code;
+      opt.textContent = lang.native;
+      targetSelect.appendChild(opt);
+    });
+    sourceSelect.value = 'fr';
+    targetSelect.value = 'en';
+  }
+
+  function loadPrefs() {
+    const prefs = readJSON(prefsKey(), {});
+    const source = SOURCE_LANGS.some((l) => l.code === prefs.source) ? prefs.source : 'fr';
+    const target = TARGET_LANGS.some((l) => l.code === prefs.target) ? prefs.target : 'en';
+    const size = Math.max(15, Math.min(30, Number(prefs.textSize) || 19));
+    sourceSelect.value = source;
+    targetSelect.value = target;
+    textSizeInput.value = String(size);
+    applyTextSize(size);
+  }
+
+  function savePrefs() {
+    writeJSON(prefsKey(), {
+      source: sourceSelect.value,
+      target: targetSelect.value,
+      textSize: Number(textSizeInput.value) || 19
+    });
+  }
+
+  function applyTextSize(size) {
+    const safe = Math.max(15, Math.min(30, Number(size) || 19));
+    document.documentElement.style.setProperty('--book-font-size', safe + 'px');
+    sizeValue.textContent = safe + 'px';
+  }
+
+  function loadSavedWords() {
+    const value = readJSON(wordsKey(), []);
+    savedWords = Array.isArray(value) ? value.filter((w) => w && w.word && w.translation) : [];
+    updateWordsUI();
+  }
+
+  function persistSavedWords() {
+    const ok = writeJSON(wordsKey(), savedWords);
+    updateWordsUI();
+    return ok;
+  }
+
+  function updateWordsUI() {
+    savedBtn.textContent = 'Saved words (' + savedWords.length + ')';
+    wordsPanelCount.textContent = '(' + savedWords.length + ')';
+    exportWordsBtn.disabled = savedWords.length === 0;
+    clearWordsBtn.disabled = savedWords.length === 0;
+    if (wordsPanel.classList.contains('open')) renderWordsList();
+  }
+
+  function isWordSaved(word, source, target) {
+    const lower = String(word || '').toLocaleLowerCase();
+    return savedWords.some((w) => String(w.word || '').toLocaleLowerCase() === lower && w.source === source && w.target === target);
+  }
+
+  function renderWordsList() {
+    wordsList.innerHTML = '';
+    if (!savedWords.length) {
+      const empty = document.createElement('div');
+      empty.className = 'panel-empty';
+      empty.textContent = 'No saved words yet. Tap a word, then choose “Save word”.';
+      wordsList.appendChild(empty);
+      return;
+    }
+
+    const ordered = savedWords.slice().sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0));
+    ordered.forEach((entry) => {
+      const item = document.createElement('article');
+      item.className = 'word-item';
+
+      const top = document.createElement('div');
+      top.className = 'word-item-top';
+
+      const main = document.createElement('div');
+      main.style.minWidth = '0';
+
+      const title = document.createElement('div');
+      title.className = 'word-title';
+      title.textContent = entry.word;
+
+      const translation = document.createElement('div');
+      translation.className = 'word-translation';
+      translation.textContent = entry.translation;
+
+      const pair = document.createElement('div');
+      pair.className = 'word-pair';
+      pair.textContent = pairLabel(entry.source, entry.target);
+
+      main.append(title, translation, pair);
+
+      const actions = document.createElement('div');
+      actions.style.display = 'flex';
+      actions.style.gap = '5px';
+
+      const speak = document.createElement('button');
+      speak.className = 'btn btn-sm';
+      speak.type = 'button';
+      speak.textContent = '🔊';
+      speak.title = 'Hear this word';
+      speak.setAttribute('aria-label', 'Hear ' + entry.word);
+      speak.addEventListener('click', () => speakText(entry.word, entry.source));
+
+      const remove = document.createElement('button');
+      remove.className = 'btn btn-sm';
+      remove.type = 'button';
+      remove.textContent = '×';
+      remove.title = 'Remove this word';
+      remove.setAttribute('aria-label', 'Remove ' + entry.word);
+      remove.addEventListener('click', () => {
+        savedWords = savedWords.filter((w) => !(w.savedAt === entry.savedAt && w.word === entry.word && w.source === entry.source && w.target === entry.target));
+        persistSavedWords();
+      });
+
+      actions.append(speak, remove);
+      top.append(main, actions);
+      item.appendChild(top);
+      wordsList.appendChild(item);
+    });
+  }
+
+  function exportWords() {
+    if (!savedWords.length) return;
+    const ordered = savedWords.slice().sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0));
+    const lines = ordered.map((w) => w.word + ' → ' + w.translation + ' (' + langEn(w.source) + ' → ' + langEn(w.target) + ')');
+    const blob = new Blob([lines.join('\n') + '\n'], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'saved-words-' + new Date().toISOString().slice(0, 10) + '.txt';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1500);
+    setStatus('Exported ' + lines.length + ' saved word' + (lines.length === 1 ? '' : 's') + '.', 'success');
+  }
+
+  function clearWords() {
+    if (!savedWords.length) return;
+    if (!window.confirm('Clear all saved words? This cannot be undone.')) return;
+    savedWords = [];
+    persistSavedWords();
+    setStatus('Saved words cleared.');
+  }
+
+  function updateEmptyHint() {
+    if (currentProfile) {
+      profileHint.textContent = 'Signed in as ' + currentProfile.name + '. Your books and words are kept separately on this device.';
+    } else {
+      profileHint.textContent = 'Tip: sign in with Google, or create a local profile, to keep a separate library for each person on this device.';
+    }
+  }
+
+  function updateAccountButton() {
+    const label = currentProfile ? (currentProfile.name || currentProfile.email || 'Account') : 'Sign in';
+    accountLabel.textContent = label;
+    accountAvatar.textContent = currentProfile ? label.slice(0, 1) : '?';
+    accountBtn.title = currentProfile ? (currentProfile.name || '') + (currentProfile.email ? ' <' + currentProfile.email + '>' : '') : 'Sign in or switch profile';
+    updateEmptyHint();
+  }
+
+  function applyTheme(theme, persist) {
+    document.documentElement.dataset.theme = theme;
+    if (persist) writeRaw(THEME_KEY, theme);
+    updateThemeButton();
+  }
+
+  function updateThemeButton() {
+    const dark = document.documentElement.dataset.theme === 'dark';
+    themeBtn.textContent = dark ? '☀️' : '🌙';
+    themeBtn.title = dark ? 'Switch to light theme' : 'Switch to dark theme';
+    themeBtn.setAttribute('aria-label', themeBtn.title);
+  }
+
+  function nextFrame() {
+    return new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  populateLanguageSelects();
+  updateThemeButton();
+
+  if (window.matchMedia) {
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    if (mq.addEventListener) {
+      mq.addEventListener('change', (event) => {
+        if (!readRaw(THEME_KEY)) applyTheme(event.matches ? 'dark' : 'light', false);
+      });
+    }
+  }
+
+  /* ---------------- IndexedDB library ---------------- */
+
+  function openBookDB() {
+    if (bookDBPromise) return bookDBPromise;
+    bookDBPromise = new Promise((resolve, reject) => {
+      if (!('indexedDB' in window)) {
+        reject(new Error('IndexedDB is not available in this browser.'));
+        return;
+      }
+      let request;
+      try {
+        request = indexedDB.open(DB_NAME, DB_VERSION);
+      } catch (e) {
+        reject(e);
+        return;
+      }
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains('meta')) db.createObjectStore('meta', { keyPath: 'key' });
+        if (!db.objectStoreNames.contains('files')) db.createObjectStore('files');
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error || new Error('Could not open the book database.'));
+      request.onblocked = () => reject(new Error('The book database is blocked by another tab.'));
+    });
+    bookDBPromise.catch(() => { bookDBPromise = null; });
+    return bookDBPromise;
+  }
+
+  async function withStore(storeName, mode, action) {
+    const db = await openBookDB();
+    return new Promise((resolve, reject) => {
+      let tx;
+      try { tx = db.transaction(storeName, mode); } catch (e) { reject(e); return; }
+      let request;
+      try { request = action(tx.objectStore(storeName)); } catch (e) { reject(e); return; }
+      if (request && typeof request.onsuccess !== 'undefined') {
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error || new Error('Database request failed.'));
+      } else {
+        tx.oncomplete = () => resolve(request);
+      }
+      tx.onerror = () => reject(tx.error || new Error('Database transaction failed.'));
+      tx.onabort = () => reject(tx.error || new Error('Database transaction aborted.'));
+    });
+  }
+
+  function dbPutMeta(meta) {
+    return withStore('meta', 'readwrite', (store) => store.put(meta));
+  }
+
+  function dbGetMeta(key) {
+    return withStore('meta', 'readonly', (store) => store.get(key));
+  }
+
+  function dbGetAllMeta() {
+    return withStore('meta', 'readonly', (store) => store.getAll());
+  }
+
+  function dbPutFile(key, blob) {
+    return withStore('files', 'readwrite', (store) => store.put(blob, key));
+  }
+
+  function dbGetFile(key) {
+    return withStore('files', 'readonly', (store) => store.get(key));
+  }
+
+  async function dbDeleteBook(key) {
+    const db = await openBookDB();
+    return new Promise((resolve, reject) => {
+      let tx;
+      try { tx = db.transaction(['meta', 'files'], 'readwrite'); } catch (e) { reject(e); return; }
+      tx.objectStore('meta').delete(key);
+      tx.objectStore('files').delete(key);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('Could not delete this book.'));
+      tx.onabort = () => reject(tx.error || new Error('Delete was aborted.'));
+    });
+  }
+
+  function bookStorageKey(owner, baseId) {
+    return owner + '::' + baseId;
+  }
+
+  function readBlob(blob) {
+    if (blob && typeof blob.arrayBuffer === 'function') return blob.arrayBuffer();
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(reader.error || new Error('Could not read this file.'));
+      reader.readAsArrayBuffer(blob);
+    });
+  }
+
+  /* ---------------- Profiles and Google sign-in ---------------- */
+
+  function getProfiles() {
+    const value = readJSON(PROFILES_KEY, {});
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  }
+
+  function saveProfiles(profiles) {
+    writeJSON(PROFILES_KEY, profiles);
+  }
+
+  function loadCurrentProfile() {
+    const id = readRaw(CURRENT_USER_KEY);
+    const profiles = getProfiles();
+    currentProfile = id && profiles[id] ? profiles[id] : null;
+    if (id && !currentProfile) removeRaw(CURRENT_USER_KEY);
+  }
+
+  function googleClientId() {
+    return readRaw(GOOGLE_CLIENT_ID_KEY) || '';
+  }
+
+  function setGoogleClientId(value) {
+    if (value) writeRaw(GOOGLE_CLIENT_ID_KEY, value);
+    else removeRaw(GOOGLE_CLIENT_ID_KEY);
+  }
+
+  function parseJwt(token) {
+    const parts = String(token || '').split('.');
+    if (parts.length < 2) throw new Error('The Google credential was not a valid token.');
+    let base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    while (base64.length % 4) base64 += '=';
+    const binary = atob(base64);
+    let percent = '';
+    for (let i = 0; i < binary.length; i++) {
+      percent += '%' + ('00' + binary.charCodeAt(i).toString(16)).slice(-2);
+    }
+    return JSON.parse(decodeURIComponent(percent));
+  }
+
+  function accountError(message) {
+    const el = $('accountError');
+    if (el) {
+      el.textContent = message;
+      el.classList.remove('hidden');
+    } else {
+      setStatus(message, 'error');
+    }
+  }
+
+  function renderAccountModal() {
+    const profiles = getProfiles();
+    const others = Object.values(profiles).sort((a, b) => (b.lastUsedAt || 0) - (a.lastUsedAt || 0));
+    const clientId = googleClientId();
+
+    let html = '';
+
+    if (currentProfile) {
+      html += '<div class="account-current">' +
+        '<span class="avatar lg">' + esc((currentProfile.name || '?').slice(0, 1)) + '</span>' +
+        '<div class="account-current-main">' +
+          '<strong>' + esc(currentProfile.name || 'Account') + '<span class="badge">' + esc(currentProfile.provider === 'google' ? 'Google' : 'Local') + '</span></strong>' +
+          '<span>' + esc(currentProfile.email || 'No email on this profile') + '</span>' +
+        '</div>' +
+        '<button class="btn btn-sm" id="signOutBtn" type="button">Sign out</button>' +
+      '</div>';
+    }
+
+    html += '<h3>' + (currentProfile ? 'Add another account' : 'Sign in to keep your own library') + '</h3>' +
+      '<p>Use Google, or create a local profile if you do not want to connect an account. Each profile has its own books, reading positions, and saved words on this device.</p>' +
+      '<div class="google-host" id="googleBtnHost"></div>' +
+      '<p class="form-error hidden" id="accountError"></p>';
+
+    html += '<details class="google-config" ' + (clientId ? '' : 'open') + '>' +
+      '<summary>Google sign-in settings</summary>' +
+      '<p>Google sign-in needs an OAuth Client ID from your own Google Cloud project. It is stored only in this browser.</p>' +
+      '<div class="inline-form">' +
+        '<input id="clientIdInput" type="text" autocomplete="off" spellcheck="false" placeholder="1234567890-abc.apps.googleusercontent.com" value="' + esc(clientId) + '" />' +
+        '<button class="btn" id="saveClientIdBtn" type="button">Save</button>' +
+      '</div>' +
+      '<p class="tiny">Create it at Google Cloud Console → APIs &amp; Services → Credentials → OAuth client ID → Web application. Add this page’s origin (for example <code>http://localhost:8000</code>) under Authorized JavaScript origins. Sign-in may not work from a <code>file://</code> page; serve the file from a local web server instead.</p>' +
+    '</details>';
+
+    html += '<div class="divider">or use a local profile</div>' +
+      '<form class="local-form" id="localForm">' +
+        '<input id="localName" type="text" maxlength="40" required placeholder="Your name, e.g. Alex" aria-label="Local profile name" />' +
+        '<button class="btn" type="submit">Create local profile</button>' +
+      '</form>';
+
+    if (others.length) {
+      html += '<h3>Profiles on this device</h3><div class="profiles-list">';
+      others.forEach((profile) => {
+        const isCurrent = currentProfile && currentProfile.id === profile.id;
+        html += '<div class="profile-row">' +
+          '<span class="avatar">' + esc((profile.name || '?').slice(0, 1)) + '</span>' +
+          '<div class="profile-row-main"><strong>' + esc(profile.name || 'Profile') + (isCurrent ? '<span class="badge">Current</span>' : '') + '</strong>' +
+          '<span>' + esc(profile.email || (profile.provider === 'google' ? 'Google account' : 'Local profile')) + '</span></div>' +
+          (isCurrent ? '' : '<button class="btn btn-sm" type="button" data-switch-profile="' + esc(profile.id) + '">Switch</button>') +
+        '</div>';
+      });
+      html += '</div>';
+    }
+
+    html += '<p class="tiny">Profiles are a convenience, not a security boundary. They are not encrypted or synced, and anyone using this browser can switch profiles. Google sign-in identifies a profile locally; this app has no server and does not verify the token.</p>';
+
+    accountBody.innerHTML = html;
+
+    const signOutBtn = $('signOutBtn');
+    if (signOutBtn) signOutBtn.addEventListener('click', signOut);
+
+    const saveClientIdBtn = $('saveClientIdBtn');
+    if (saveClientIdBtn) {
+      saveClientIdBtn.addEventListener('click', () => {
+        const input = $('clientIdInput');
+        const value = input ? input.value.trim() : '';
+        setGoogleClientId(value);
+        renderAccountModal();
+      });
+    }
+
+    const localForm = $('localForm');
+    if (localForm) {
+      localForm.addEventListener('submit', (event) => {
+        event.preventDefault();
+        const input = $('localName');
+        const name = input ? input.value.trim() : '';
+        if (!name) return;
+        const id = 'local:' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+        const profilesNow = getProfiles();
+        profilesNow[id] = {
+          id: id,
+          provider: 'local',
+          name: name,
+          email: '',
+          picture: '',
+          lastUsedAt: Date.now()
+        };
+        saveProfiles(profilesNow);
+        activateProfile(id);
+      });
+    }
+
+    accountBody.querySelectorAll('[data-switch-profile]').forEach((button) => {
+      button.addEventListener('click', () => activateProfile(button.getAttribute('data-switch-profile')));
+    });
+
+    setupGoogleButton();
+  }
+
+  function waitForGoogle(ms) {
+    if (window.google && window.google.accounts && window.google.accounts.id) return Promise.resolve(true);
+    if (googleWaitPromise) return googleWaitPromise;
+    googleWaitPromise = new Promise((resolve) => {
+      const started = Date.now();
+      const timer = setInterval(() => {
+        if (window.google && window.google.accounts && window.google.accounts.id) {
+          clearInterval(timer);
+          googleWaitPromise = null;
+          resolve(true);
+        } else if (Date.now() - started > ms) {
+          clearInterval(timer);
+          googleWaitPromise = null;
+          resolve(false);
+        }
+      }, 150);
+    });
+    return googleWaitPromise;
+  }
+
+  async function setupGoogleButton() {
+    const host = $('googleBtnHost');
+    if (!host) return;
+    const clientId = googleClientId();
+    if (!clientId) {
+      host.innerHTML = '<span class="tiny">Add a Google OAuth Client ID below to enable Google sign-in.</span>';
+      return;
+    }
+    host.innerHTML = '<span class="tiny">Loading Google sign-in…</span>';
+    const ready = await waitForGoogle(6000);
+    if (!ready) {
+      host.innerHTML = '<span class="tiny">Google sign-in could not load. Check your connection, or use a local profile below.</span>';
+      return;
+    }
+    try {
+      window.google.accounts.id.initialize({
+        client_id: clientId,
+        callback: handleGoogleCredential,
+        auto_select: false,
+        cancel_on_tap_outside: true
+      });
+      host.innerHTML = '';
+      window.google.accounts.id.renderButton(host, {
+        type: 'standard',
+        theme: document.documentElement.dataset.theme === 'dark' ? 'filled_black' : 'outline',
+        size: 'large',
+        text: 'signin_with',
+        shape: 'pill',
+        logo_alignment: 'left',
+        width: 300
+      });
+    } catch (e) {
+      host.innerHTML = '<span class="tiny">Google sign-in could not start: ' + esc(e.message) + '</span>';
+    }
+  }
+
+  async function handleGoogleCredential(response) {
+    try {
+      if (!response || !response.credential) throw new Error('Google did not return a credential.');
+      const payload = parseJwt(response.credential);
+      if (!payload.sub) throw new Error('The Google account did not include an id.');
+      const id = 'google:' + payload.sub;
+      const profiles = getProfiles();
+      profiles[id] = {
+        id: id,
+        provider: 'google',
+        sub: payload.sub,
+        name: payload.name || payload.email || 'Google user',
+        email: payload.email || '',
+        picture: payload.picture || '',
+        lastUsedAt: Date.now()
+      };
+      saveProfiles(profiles);
+      await activateProfile(id);
+    } catch (e) {
+      accountError('Google sign-in failed: ' + e.message);
+    }
+  }
+
+  function signOut() {
+    try {
+      if (window.google && window.google.accounts && window.google.accounts.id) {
+        window.google.accounts.id.disableAutoSelect();
+      }
+    } catch (e) { /* ignore */ }
+    activateProfile(null);
+  }
+
+  async function activateProfile(id) {
+    await savePositionNow();
+    closePopup();
+    closePanels();
+    closeAccountModal();
+
+    let profile = null;
+    if (id) {
+      const profiles = getProfiles();
+      profile = profiles[id] || null;
+      if (!profile) return;
+      profile.lastUsedAt = Date.now();
+      profiles[id] = profile;
+      saveProfiles(profiles);
+    }
+
+    currentProfile = profile;
+    if (profile) writeRaw(CURRENT_USER_KEY, profile.id);
+    else removeRaw(CURRENT_USER_KEY);
+
+    translationCache.clear();
+    closeCurrentBook();
+    loadPrefs();
+    loadSavedWords();
+    updateAccountButton();
+    updateStorageNotes();
+
+    if (profile) {
+      setStatus('Signed in as ' + profile.name + '. Open a PDF or choose one from My books.');
+    } else {
+      setStatus('Signed out. You are using the guest library on this device.');
+    }
+  }
+
+  /* ---------------- Pronunciation ---------------- */
+
+  function stopSpeech() {
+    if (currentAudio) {
+      const audio = currentAudio;
+      currentAudio = null;
+      try { audio.pause(); audio.currentTime = 0; audio.removeAttribute('src'); audio.load(); } catch (e) { /* ignore */ }
+    }
+    if ('speechSynthesis' in window) {
+      try { window.speechSynthesis.cancel(); } catch (e) { /* ignore */ }
+    }
+  }
+
+  function speakFallback(text, lang) {
+    if (!('speechSynthesis' in window)) return;
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = lang;
+    utterance.rate = 0.9;
+    const base = lang.split('-')[0].toLowerCase();
+    const prefs = VOICE_PREFS[base] || [];
+    let voices = [];
+    try { voices = window.speechSynthesis.getVoices() || []; } catch (e) { voices = []; }
+    let voice = null;
+    for (const pref of prefs) {
+      voice = voices.find((v) => String(v.name || '').toLowerCase().includes(pref.toLowerCase()));
+      if (voice) break;
+    }
+    if (!voice) voice = voices.find((v) => String(v.lang || '').toLowerCase().startsWith(base)) || null;
+    if (voice) utterance.voice = voice;
+    try { window.speechSynthesis.speak(utterance); } catch (e) { /* ignore */ }
+  }
+
+  function speakText(text, langCode) {
+    const clean = String(text || '').trim();
+    if (!clean) return;
+    stopSpeech();
+    const lang = serviceLang(langCode);
+    const url = 'https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=' +
+      encodeURIComponent(lang) + '&q=' + encodeURIComponent(clean);
+    const audio = new Audio(url);
+    audio.playbackRate = 0.95;
+    audio.preload = 'auto';
+    let fellBack = false;
+    const fallback = () => {
+      if (fellBack || currentAudio !== audio) return;
+      fellBack = true;
+      currentAudio = null;
+      speakFallback(clean, lang);
+    };
+    audio.addEventListener('error', fallback);
+    currentAudio = audio;
+    const playResult = audio.play();
+    if (playResult && typeof playResult.catch === 'function') playResult.catch(fallback);
+  }
+
+  if ('speechSynthesis' in window) {
+    try { window.speechSynthesis.getVoices(); } catch (e) { /* ignore */ }
+    window.speechSynthesis.addEventListener('voiceschanged', () => {
+      try { window.speechSynthesis.getVoices(); } catch (e) { /* ignore */ }
+    });
+  }
+
+  /* ---------------- Translation ---------------- */
+
+  const GOOGLE_ENDPOINTS = [
+    'https://clients5.google.com/translate_a/single?client=dict-chrome-ex',
+    'https://translate.googleapis.com/translate_a/single?client=gtx'
+  ];
+  const browserTranslators = new Map();
+
+  function cacheKey(source, target, mode, text, context, nounHint) {
+    return source + '\u0000' + target + '\u0000' + mode + '\u0000' + text +
+      (context ? '\u0000' + context : '') + (nounHint ? '\u0000noun' : '');
+  }
+
+  function cacheResult(key, value) {
+    if (translationCache.size >= 500) {
+      const first = translationCache.keys().next().value;
+      if (first) translationCache.delete(first);
+    }
+    translationCache.set(key, value);
+  }
+
+  function withTimeout(promise, ms, label) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(label + ' timed out.')), ms);
+      promise.then((value) => { clearTimeout(timer); resolve(value); }, (error) => { clearTimeout(timer); reject(error); });
+    });
+  }
+
+  function cleanTranslation(value) {
+    let text = String(value == null ? '' : value).trim();
+    text = text.replace(/^```[a-z]*\s*/i, '').replace(/```$/i, '').trim();
+    text = text.replace(/^["'“”«»](.*)["'“”«»]$/s, '$1').trim();
+    return text.replace(/\s+/g, ' ').trim();
+  }
+
+  function normalizeTerm(value) {
+    return String(value || '').toLowerCase()
+      .replace(/[.,!?;:…«»"'“”()[\]{}]/g, ' ')
+      .replace(/\s+/g, ' ').trim();
+  }
+
+  function sameTerm(a, b) {
+    return normalizeTerm(a) === normalizeTerm(b);
+  }
+
+  function contextIncludes(context, term) {
+    const needle = normalizeTerm(term);
+    if (!needle) return false;
+    return (' ' + normalizeTerm(context) + ' ').includes(' ' + needle + ' ');
+  }
+
+  async function probeBrowserTranslator(source, target) {
+    const pair = { sourceLanguage: serviceLang(source), targetLanguage: serviceLang(target) };
+    try {
+      if (window.Translator) {
+        let availability = 'available';
+        if (typeof window.Translator.availability === 'function') {
+          availability = await withTimeout(window.Translator.availability(pair), 1500, 'availability check');
+        }
+        if (availability === 'unavailable' || availability === 'downloadable' || availability === 'downloading') {
+          return null;
+        }
+        if (typeof window.Translator.create === 'function') {
+          return await withTimeout(window.Translator.create(pair), 6000, 'on-device translator');
+        }
+      }
+      if (window.translation && typeof window.translation.createTranslator === 'function') {
+        if (typeof window.translation.canTranslate === 'function') {
+          const can = await withTimeout(window.translation.canTranslate(pair), 1500, 'availability check');
+          if (can === 'no' || can === 'after-download') return null;
+        }
+        return await withTimeout(window.translation.createTranslator(pair), 6000, 'on-device translator');
+      }
+    } catch (e) {
+      return null;
+    }
+    return null;
+  }
+
+  function getBrowserTranslator(source, target) {
+    const key = source + '>' + target;
+    if (!browserTranslators.has(key)) browserTranslators.set(key, probeBrowserTranslator(source, target));
+    return browserTranslators.get(key);
+  }
+
+  async function browserTranslate(text, source, target) {
+    // The availability probe is cached per language pair. Chrome can take seconds to
+    // answer it, and calling it on every tap made every word feel slow.
+    const translator = await getBrowserTranslator(source, target);
+    if (!translator) throw new Error('no built-in translator is available in this browser.');
+    const value = await withTimeout(translator.translate(text), 8000, 'On-device translator');
+    return value;
+  }
+
+  function parseClaudeResult(raw, mode) {
+    let text = cleanTranslation(raw);
+    if (!text) throw new Error('the service returned an empty response.');
+    if (/^NOT_AVAILABLE$/i.test(text)) throw new Error('the service returned no translation.');
+    if (mode === 'word') {
+      const parts = text.split(/\s*[,;]\s*|\s+—\s+/).map(cleanTranslation).filter(Boolean);
+      const translation = parts[0];
+      if (!translation) throw new Error('the service returned no translation.');
+      const alternatives = [];
+      parts.slice(1).forEach((part) => {
+        if (part.toLowerCase() !== translation.toLowerCase() && !alternatives.includes(part)) alternatives.push(part);
+      });
+      return { translation: translation, alternatives: alternatives.slice(0, 2) };
+    }
+    return { translation: text, alternatives: [] };
+  }
+
+  async function claudeTranslate(text, source, target, mode) {
+    if (!window.claude || typeof window.claude.use !== 'function') {
+      throw new Error('the Claude runtime is not available here.');
+    }
+    const sample = await window.claude.use('sample');
+    if (!sample) throw new Error('the Claude sample namespace is not available.');
+    const prompt = mode === 'word'
+      ? 'Translate the ' + langEn(source) + ' word "' + text + '" into ' + langEn(target) + '. Reply with only the main translation, then up to two alternative meanings separated by commas. Do not include the original word, labels, quotation marks, or explanations. If there is no good translation, reply exactly NOT_AVAILABLE.'
+      : 'Translate the following ' + langEn(source) + ' text into ' + langEn(target) + '. Reply with only a natural, complete translation of the whole text. Do not include the original text, labels, quotation marks, or explanations. If there is no good translation, reply exactly NOT_AVAILABLE.\n\n' + text;
+    const raw = await sample(prompt, { modelTier: 'quick', cache: true });
+    return parseClaudeResult(raw, mode);
+  }
+
+  async function fetchGoogleData(text, source, target, mode, signal) {
+    let lastError = null;
+    for (let i = 0; i < GOOGLE_ENDPOINTS.length; i++) {
+      const url = GOOGLE_ENDPOINTS[i] + '&sl=' +
+        encodeURIComponent(serviceLang(source)) + '&tl=' + encodeURIComponent(serviceLang(target)) +
+        '&dt=t' + (mode === 'word' ? '&dt=bd' : '') + '&q=' + encodeURIComponent(text);
+      try {
+        const response = await fetch(url, { signal: signal });
+        if (!response.ok) throw new Error('HTTP ' + response.status + '.');
+        const data = await response.json();
+        return data;
+      } catch (e) {
+        if (e && e.name === 'AbortError') throw e;
+        lastError = e;
+      }
+    }
+    throw lastError || new Error('the translation service is unavailable.');
+  }
+
+  function extractGoogleTranslation(data) {
+    const segments = Array.isArray(data && data[0]) ? data[0] : [];
+    return segments.map((segment) => Array.isArray(segment) ? (segment[0] || '') : '').join('').trim();
+  }
+
+  function parseGoogleDictionary(data, query) {
+    const senses = [];
+    if (!Array.isArray(data && data[1])) return senses;
+    const wanted = normalizeTerm(query);
+    data[1].forEach((entry) => {
+      if (!Array.isArray(entry)) return;
+      // Google sometimes returns the dictionary entry for a different homograph,
+      // for example "a" (avoir) coming back with the senses of "à" (preposition).
+      const sourceTerm = typeof entry[3] === 'string' ? entry[3] : '';
+      if (sourceTerm && normalizeTerm(sourceTerm) !== wanted) return;
+      const pos = typeof entry[0] === 'string' ? entry[0] : '';
+      const detailed = Array.isArray(entry[2]) ? entry[2] : [];
+      let added = 0;
+      detailed.forEach((item) => {
+        if (!Array.isArray(item)) return;
+        const term = typeof item[0] === 'string' ? item[0].trim() : '';
+        if (!term) return;
+        const score = Number(item[3]) || 0;
+        if (!senses.some((sense) => sameTerm(sense.term, term))) {
+          senses.push({ term: term, pos: pos, score: score });
+          added++;
+        }
+      });
+      if (!added && Array.isArray(entry[1])) {
+        entry[1].forEach((term) => {
+          if (typeof term === 'string' && term && !senses.some((sense) => sameTerm(sense.term, term))) {
+            senses.push({ term: term, pos: pos, score: 0 });
+          }
+        });
+      }
+    });
+    return senses;
+  }
+
+  function topSense(senses) {
+    if (!senses.length) return null;
+    return senses.slice().sort((a, b) => (b.score || 0) - (a.score || 0))[0];
+  }
+
+  function pickWordSense(senses, segment, translatedContext, sourceWord, nounHint) {
+    const candidates = senses.slice();
+    if (segment && !candidates.some((sense) => sameTerm(sense.term, segment))) {
+      candidates.push({ term: segment, pos: '', score: 0, fromSegment: true });
+    }
+    if (!candidates.length) return null;
+
+    // "l'est" / "d'est" are nouns (the east / of the east), while a bare "est"
+    // is almost always the verb "is". The elided article is a reliable hint.
+    if (nounHint) {
+      const nouns = candidates.filter((sense) => /noun/i.test(sense.pos || ''));
+      if (nouns.length) return topSense(nouns);
+    }
+
+    if (translatedContext) {
+      const matched = candidates.filter((sense) => contextIncludes(translatedContext, sense.term));
+      if (matched.length) {
+        matched.sort((a, b) => (b.score || 0) - (a.score || 0));
+        return matched[0];
+      }
+    }
+
+    // With no usable context, keep Google's plain translation unless it looks like
+    // the classic isolated-word glitch: a lowercase source word translated as a
+    // capitalized noun, such as "est" -> "East" instead of "is".
+    if (sourceWord && sourceWord === sourceWord.toLowerCase() &&
+        segment && /^[A-Z][a-z]+$/.test(segment)) {
+      const lower = candidates.filter((sense) => !sense.fromSegment && /^[a-z]/.test(sense.term));
+      if (lower.length) return topSense(lower);
+    }
+
+    if (segment) {
+      const same = candidates.find((sense) => !sense.fromSegment && sameTerm(sense.term, segment));
+      if (same) return same;
+      return { term: segment, pos: '', score: 0, fromSegment: true };
+    }
+    return topSense(candidates);
+  }
+
+  function buildAlternatives(senses, primary, segment, limit) {
+    const out = [];
+    const primaryTerm = primary ? primary.term : '';
+    const push = (term, pos) => {
+      if (!term) return;
+      if (primaryTerm && sameTerm(term, primaryTerm)) return;
+      if (out.some((item) => sameTerm(item.term, term))) return;
+      out.push({ term: term, pos: pos || '' });
+    };
+
+    const topScore = senses.reduce((max, sense) => Math.max(max, sense.score || 0), 0);
+    senses.slice().sort((a, b) => (b.score || 0) - (a.score || 0)).forEach((sense) => {
+      // Drop long-tail dictionary noise such as "gib" for "chat".
+      if (topScore > 0 && (sense.score || 0) < topScore * 0.02) return;
+      push(sense.term, sense.pos);
+    });
+    if (segment) push(segment, '');
+
+    return out.slice(0, limit || 3).map((item) => {
+      return item.pos ? item.term + ' (' + item.pos + ')' : item.term;
+    });
+  }
+
+  async function googleContextTranslation(context, source, target, signal) {
+    if (!context) return '';
+    const key = cacheKey(source, target, 'context', context);
+    if (translationCache.has(key)) return translationCache.get(key).translation;
+    try {
+      const data = await fetchGoogleData(context, source, target, 'phrase', signal);
+      const translation = extractGoogleTranslation(data);
+      if (!translation) return '';
+      const result = { translation: translation, alternatives: [] };
+      cacheResult(key, result);
+      return translation;
+    } catch (e) {
+      if (e && e.name === 'AbortError') throw e;
+      return '';
+    }
+  }
+
+  async function googleWordLookup(text, source, target, signal, context, nounHint) {
+    // Always resolve the sense in English first: Google's dictionary is richest for
+    // English, and it is where "est" ranks "is" above "east". The chosen English
+    // sense is then translated into the requested target language.
+    const data = await fetchGoogleData(text, source, 'en', 'word', signal);
+    const segment = extractGoogleTranslation(data);
+    if (!segment) throw new Error('the service returned an empty response.');
+
+    const senses = parseGoogleDictionary(data, text);
+    const top = topSense(senses);
+    // Only pay for a second request when the dictionary disagrees with the plain
+    // translation. Unambiguous words such as "chat" -> "cat" stay at one request.
+    const ambiguous = top && !sameTerm(top.term, segment);
+    const translatedContext = (ambiguous && context)
+      ? await googleContextTranslation(context, source, 'en', signal)
+      : '';
+    const primary = pickWordSense(senses, segment, translatedContext, text, nounHint) || { term: segment, pos: '' };
+
+    if (target === 'en') {
+      const alternatives = buildAlternatives(senses, primary, segment, 3);
+      return { translation: primary.term, alternatives: alternatives };
+    }
+
+    const targetData = await fetchGoogleData(primary.term, 'en', target, 'phrase', signal);
+    let targetTranslation = extractGoogleTranslation(targetData);
+    if (!targetTranslation) throw new Error('the service returned an empty response.');
+
+    // The English pivot is a single lowercase word, so Google often capitalizes the
+    // target as if it started a sentence ("Ist", "È"). Keep German nouns capitalized.
+    const isNoun = primary.pos && /noun/i.test(primary.pos);
+    if (!/\s/.test(targetTranslation) && primary.term === primary.term.toLowerCase() &&
+        (target !== 'de' || !isNoun)) {
+      targetTranslation = targetTranslation.charAt(0).toLowerCase() + targetTranslation.slice(1);
+    }
+    return { translation: targetTranslation, alternatives: [] };
+  }
+
+  async function googlePhraseLookup(text, source, target, signal) {
+    const data = await fetchGoogleData(text, source, target, 'phrase', signal);
+    const translation = extractGoogleTranslation(data);
+    if (!translation) throw new Error('the service returned an empty response.');
+    return { translation: translation, alternatives: [] };
+  }
+
+  function decodeHtmlEntities(value) {
+    const area = document.createElement('textarea');
+    area.innerHTML = String(value || '');
+    return area.value;
+  }
+
+  async function myMemoryTranslate(text, source, target, signal) {
+    const url = 'https://api.mymemory.translated.net/get?q=' + encodeURIComponent(text) +
+      '&langpair=' + encodeURIComponent(serviceLang(source)) + '|' + encodeURIComponent(serviceLang(target));
+    const response = await fetch(url, { signal: signal });
+    if (!response.ok) throw new Error('HTTP ' + response.status + '.');
+    const data = await response.json();
+    const status = String(data && data.responseStatus);
+    if (status !== '200') {
+      const detail = data && data.responseDetails ? data.responseDetails : 'service status ' + status;
+      throw new Error(detail + '.');
+    }
+    const translation = decodeHtmlEntities(data && data.responseData && data.responseData.translatedText).trim();
+    if (!translation) throw new Error('the service returned an empty response.');
+    return { translation: translation, alternatives: [] };
+  }
+
+  async function translateText(text, source, target, mode, signal, context, nounHint) {
+    const key = cacheKey(source, target, mode, text, context, nounHint);
+    if (translationCache.has(key)) return translationCache.get(key);
+    const reasons = [];
+
+    if (signal && signal.aborted) throw new DOMException('Aborted', 'AbortError');
+
+    // Google goes first now: it usually answers in a few hundred milliseconds and
+    // its dictionary data lets us choose the meaning that fits the sentence. The
+    // on-device translator used to run first, but its availability check could
+    // stall every single tap for 2.5 seconds.
+    try {
+      const lookup = mode === 'word'
+        ? googleWordLookup(text, source, target, signal, context, nounHint)
+        : googlePhraseLookup(text, source, target, signal);
+      const result = await withTimeout(lookup, 9000, 'Google Translate');
+      if (signal && signal.aborted) throw new DOMException('Aborted', 'AbortError');
+      cacheResult(key, result);
+      return result;
+    } catch (e) {
+      if (e && e.name === 'AbortError') throw e;
+      reasons.push('Google Translate: ' + e.message);
+    }
+
+    try {
+      const value = await browserTranslate(text, source, target);
+      if (signal && signal.aborted) throw new DOMException('Aborted', 'AbortError');
+      const translation = cleanTranslation(value);
+      if (!translation) throw new Error('the translator returned an empty response.');
+      const result = { translation: translation, alternatives: [] };
+      cacheResult(key, result);
+      return result;
+    } catch (e) {
+      if (e && e.name === 'AbortError') throw e;
+      reasons.push('On-device translator: ' + e.message);
+    }
+
+    try {
+      const result = await withTimeout(claudeTranslate(text, source, target, mode), 8000, 'Claude');
+      if (signal && signal.aborted) throw new DOMException('Aborted', 'AbortError');
+      cacheResult(key, result);
+      return result;
+    } catch (e) {
+      if (e && e.name === 'AbortError') throw e;
+      reasons.push('Claude: ' + e.message);
+    }
+
+    try {
+      const result = await withTimeout(myMemoryTranslate(text, source, target, signal), 8000, 'MyMemory');
+      if (signal && signal.aborted) throw new DOMException('Aborted', 'AbortError');
+      cacheResult(key, result);
+      return result;
+    } catch (e) {
+      if (e && e.name === 'AbortError') throw e;
+      reasons.push('MyMemory: ' + e.message);
+    }
+
+    const error = new Error('Translation not available right now');
+    error.reasons = reasons;
+    throw error;
+  }
+
+  /* ---------------- Translation popup ---------------- */
+
+  function lookupWord(token, source) {
+    if (source === 'fr') {
+      const match = String(token).match(ELISION_RE);
+      if (match && match[2]) return match[2];
+    }
+    return token;
+  }
+
+  function getCurrentAnchorRect() {
+    if (!popupState) return null;
+    try {
+      if (popupState.wordEl && popupState.wordEl.isConnected) return popupState.wordEl.getBoundingClientRect();
+      if (popupState.range) return popupState.range.getBoundingClientRect();
+    } catch (e) { /* ignore */ }
+    return null;
+  }
+
+  function positionPopup(rect, preferBelow) {
+    if (!rect) return;
+    const margin = 10;
+    const gap = 8;
+    const topbar = document.querySelector('.topbar');
+    const safeTop = (topbar ? topbar.offsetHeight : 0) + 8;
+
+    popup.style.visibility = 'hidden';
+    popup.classList.remove('hidden');
+    const width = popup.offsetWidth;
+    const height = popup.offsetHeight;
+
+    let left = rect.left + rect.width / 2 - width / 2;
+    left = Math.max(margin, Math.min(left, window.innerWidth - width - margin));
+
+    let top;
+    const above = rect.top - height - gap;
+    const below = rect.bottom + gap;
+    if (preferBelow) {
+      top = below;
+      if (top + height > window.innerHeight - margin) top = above;
+    } else {
+      top = above >= safeTop ? above : below;
+      if (top + height > window.innerHeight - margin) {
+        top = above >= safeTop ? above : Math.max(safeTop, window.innerHeight - height - margin);
+      }
+    }
+    top = Math.max(safeTop, Math.min(top, window.innerHeight - height - margin));
+
+    popup.style.left = Math.round(left) + 'px';
+    popup.style.top = Math.round(top) + 'px';
+    popup.style.visibility = '';
+  }
+
+  function repositionPopup() {
+    if (popup.classList.contains('hidden') || !popupState) return;
+    const rect = getCurrentAnchorRect();
+    if (!rect) return;
+    if (rect.bottom < -30 || rect.top > window.innerHeight + 30) {
+      closePopup();
+      return;
+    }
+    positionPopup(rect, popupState.mode === 'phrase');
+  }
+
+  function setPopupLoading(displayText, source, target, mode) {
+    popupWord.textContent = displayText.length > 140 ? displayText.slice(0, 137) + '…' : displayText;
+    popupPair.textContent = pairLabel(source, target);
+    popupTranslation.textContent = 'Translating…';
+    popupTranslation.classList.add('loading');
+    popupAlt.textContent = '';
+    popupAlt.classList.add('hidden');
+    popupReasons.textContent = '';
+    popupReasons.classList.add('hidden');
+    speakTranslationBtn.disabled = true;
+    speakTranslationBtn.textContent = '🔊 Translation';
+    speakWordBtn.disabled = false;
+    speakWordBtn.textContent = mode === 'phrase' ? '🔊 Phrase' : '🔊 Word';
+    if (mode === 'word') {
+      saveWordBtn.classList.remove('hidden');
+      saveWordBtn.disabled = true;
+      saveWordBtn.textContent = 'Save word';
+    } else {
+      saveWordBtn.classList.add('hidden');
+    }
+  }
+
+  function getWordContext(wordEl) {
+    try {
+      const line = wordEl.closest('.line');
+      if (!line) return '';
+      const raw = line.textContent || '';
+      if (!raw.trim()) return '';
+      let offset = 0;
+      let found = -1;
+      const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
+      let node;
+      while ((node = walker.nextNode())) {
+        if (node.parentNode === wordEl) { found = offset; break; }
+        offset += node.textContent.length;
+      }
+      if (found < 0) return '';
+
+      const boundary = (ch) => ch === '.' || ch === '!' || ch === '?' || ch === '…';
+      let start = found;
+      while (start > 0 && !boundary(raw[start - 1])) start--;
+      let end = found;
+      while (end < raw.length && !boundary(raw[end])) end++;
+      if (end < raw.length) end++;
+
+      let sentence = raw.slice(start, end).replace(/\s+/g, ' ').trim();
+      if (sentence.length > 280) {
+        const rel = found - start;
+        sentence = raw.slice(Math.max(0, start + rel - 130), Math.min(raw.length, start + rel + 150))
+          .replace(/\s+/g, ' ').trim();
+      }
+      if (sentence.split(/\s+/).length < 2) return '';
+      return sentence;
+    } catch (e) {
+      return '';
+    }
+  }
+
+  function openWordPopup(wordEl) {
+    const token = wordEl.getAttribute('data-word') || wordEl.textContent || '';
+    if (!token) return;
+    const source = sourceSelect.value;
+    const target = targetSelect.value;
+    const lookup = lookupWord(token, source);
+    const context = getWordContext(wordEl);
+    const nounHint = source === 'fr' && /^[ld]['’]/i.test(token);
+
+    closePopup();
+    const requestId = ++translateSeq;
+    activeWordEl = wordEl;
+    wordEl.classList.add('active');
+    popupState = {
+      mode: 'word',
+      display: token,
+      lookup: lookup,
+      context: context,
+      nounHint: nounHint,
+      source: source,
+      target: target,
+      translation: '',
+      alternatives: [],
+      wordEl: wordEl,
+      range: null,
+      requestId: requestId
+    };
+
+    setPopupLoading(token, source, target, 'word');
+    if (isWordSaved(token, source, target)) {
+      saveWordBtn.textContent = 'Saved';
+      saveWordBtn.disabled = true;
+    }
+    popup.classList.remove('hidden');
+    positionPopup(wordEl.getBoundingClientRect(), false);
+    speakText(token, source);
+    runTranslation(requestId);
+  }
+
+  function openPhrasePopup(text, range, rect) {
+    closePopup();
+    const source = sourceSelect.value;
+    const target = targetSelect.value;
+    const requestId = ++translateSeq;
+    let safeRange = null;
+    try { safeRange = range.cloneRange(); } catch (e) { safeRange = null; }
+    popupState = {
+      mode: 'phrase',
+      display: text,
+      lookup: text,
+      context: '',
+      nounHint: false,
+      source: source,
+      target: target,
+      translation: '',
+      alternatives: [],
+      wordEl: null,
+      range: safeRange,
+      requestId: requestId
+    };
+
+    setPopupLoading(text, source, target, 'phrase');
+    popup.classList.remove('hidden');
+    positionPopup(rect, true);
+    speakText(text, source);
+    runTranslation(requestId);
+  }
+
+  async function runTranslation(requestId) {
+    const state = popupState;
+    if (!state || state.requestId !== requestId) return;
+    if (translationAbort) translationAbort.abort();
+    const controller = new AbortController();
+    translationAbort = controller;
+
+    try {
+      const result = await translateText(state.lookup, state.source, state.target, state.mode, controller.signal, state.context || '', state.nounHint || false);
+      if (requestId !== translateSeq || !popupState || popupState.requestId !== requestId) return;
+      state.translation = result.translation;
+      state.alternatives = result.alternatives || [];
+      popupTranslation.textContent = result.translation;
+      popupTranslation.classList.remove('loading');
+      if (state.mode === 'word' && state.alternatives.length) {
+        popupAlt.textContent = 'Also: ' + state.alternatives.join(', ');
+        popupAlt.classList.remove('hidden');
+      } else {
+        popupAlt.textContent = '';
+        popupAlt.classList.add('hidden');
+      }
+      speakTranslationBtn.disabled = false;
+      if (state.mode === 'word') {
+        const already = isWordSaved(state.display, state.source, state.target);
+        saveWordBtn.classList.remove('hidden');
+        saveWordBtn.disabled = already;
+        saveWordBtn.textContent = already ? 'Saved' : 'Save word';
+      }
+      positionPopup(getCurrentAnchorRect(), state.mode === 'phrase');
+    } catch (error) {
+      if (requestId !== translateSeq || !popupState || popupState.requestId !== requestId) return;
+      if (error && error.name === 'AbortError') return;
+      popupTranslation.textContent = 'Translation not available right now';
+      popupTranslation.classList.remove('loading');
+      popupAlt.textContent = '';
+      popupAlt.classList.add('hidden');
+      popupReasons.textContent = 'Reasons: ' + ((error.reasons && error.reasons.length) ? error.reasons.join(' · ') : (error.message || 'unknown error'));
+      popupReasons.classList.remove('hidden');
+      speakTranslationBtn.disabled = true;
+      if (state.mode === 'word') {
+        saveWordBtn.classList.remove('hidden');
+        saveWordBtn.disabled = true;
+      }
+      positionPopup(getCurrentAnchorRect(), state.mode === 'phrase');
+    } finally {
+      if (translationAbort === controller) translationAbort = null;
+    }
+  }
+
+  function closePopup() {
+    translateSeq++;
+    if (translationAbort) {
+      try { translationAbort.abort(); } catch (e) { /* ignore */ }
+      translationAbort = null;
+    }
+    stopSpeech();
+    popup.classList.add('hidden');
+    popup.style.visibility = '';
+    if (activeWordEl) activeWordEl.classList.remove('active');
+    activeWordEl = null;
+    popupState = null;
+  }
+
+  function saveCurrentWord() {
+    const state = popupState;
+    if (!state || state.mode !== 'word' || !state.translation) return;
+    if (isWordSaved(state.display, state.source, state.target)) {
+      saveWordBtn.textContent = 'Saved';
+      saveWordBtn.disabled = true;
+      return;
+    }
+    savedWords.push({
+      word: state.display,
+      lookup: state.lookup,
+      source: state.source,
+      target: state.target,
+      translation: state.translation,
+      alternatives: state.alternatives || [],
+      savedAt: Date.now()
+    });
+    const ok = persistSavedWords();
+    saveWordBtn.textContent = 'Saved';
+    saveWordBtn.disabled = true;
+    if (ok) setStatus('Saved “' + state.display + '”.', 'success');
+    else setStatus('Saved for this session, but storage is unavailable.', 'error');
+  }
+
+  /* ---------------- PDF rendering and reading position ---------------- */
+
+  function buildTextLines(items) {
+    const list = [];
+    (items || []).forEach((item) => {
+      if (!item || typeof item.str !== 'string' || !item.str) return;
+      const tr = Array.isArray(item.transform) ? item.transform : [1, 0, 0, 1, 0, 0];
+      list.push({
+        str: item.str,
+        x: Number(tr[4]) || 0,
+        y: Number(tr[5]) || 0,
+        size: Math.abs(Number(tr[3])) || Number(item.height) || 10
+      });
+    });
+    if (!list.length) return [];
+
+    list.sort((a, b) => {
+      const dy = b.y - a.y;
+      if (Math.abs(dy) > 1.5) return dy;
+      return a.x - b.x;
+    });
+
+    const groups = [];
+    list.forEach((item) => {
+      const tolerance = Math.max(2, item.size * 0.35);
+      let group = groups.length ? groups[groups.length - 1] : null;
+      if (!group || Math.abs(group.y - item.y) > tolerance) {
+        group = { y: item.y, size: item.size, items: [] };
+        groups.push(group);
+      }
+      group.items.push(item);
+      group.size = Math.max(group.size, item.size);
+    });
+
+    return groups.map((group) => {
+      group.items.sort((a, b) => a.x - b.x);
+      let text = '';
+      group.items.forEach((item) => {
+        const value = item.str;
+        if (!value) return;
+        if (text && !/\s$/.test(text) && !/^\s/.test(value)) {
+          if (!/[-'’]$/.test(text)) text += ' ';
+        }
+        text += value;
+      });
+      return { text: text.replace(/[ \t]+$/, ''), y: group.y, size: group.size };
+    }).filter((line) => line.text.trim().length > 0);
+  }
+
+  function appendTokens(element, text, pageNumber) {
+    WORD_RE.lastIndex = 0;
+    let last = 0;
+    let match;
+    while ((match = WORD_RE.exec(text)) !== null) {
+      if (match.index > last) element.appendChild(document.createTextNode(text.slice(last, match.index)));
+      const span = document.createElement('span');
+      span.className = 'word';
+      span.textContent = match[0];
+      span.setAttribute('data-word', match[0]);
+      span.setAttribute('data-page', String(pageNumber));
+      span.setAttribute('role', 'button');
+      span.tabIndex = -1;
+      element.appendChild(span);
+      last = match.index + match[0].length;
+    }
+    if (last < text.length) element.appendChild(document.createTextNode(text.slice(last)));
+  }
+
+  function createPageCard(pageNumber, lines) {
+    const card = document.createElement('article');
+    card.className = 'page-card';
+    card.setAttribute('data-page', String(pageNumber));
+
+    const label = document.createElement('div');
+    label.className = 'page-label';
+    label.textContent = 'Page ' + pageNumber;
+    card.appendChild(label);
+
+    const text = document.createElement('div');
+    text.className = 'page-text';
+
+    if (!lines.length) {
+      const empty = document.createElement('div');
+      empty.className = 'page-empty';
+      empty.textContent = 'This page has no selectable text.';
+      text.appendChild(empty);
+    } else {
+      let previous = null;
+      lines.forEach((line) => {
+        if (previous) {
+          const gap = previous.y - line.y;
+          const threshold = Math.max(previous.size, line.size) * 1.9;
+          if (gap > threshold) {
+            const spacer = document.createElement('div');
+            spacer.className = 'line-spacer';
+            text.appendChild(spacer);
+          }
+        }
+        const lineEl = document.createElement('div');
+        lineEl.className = 'line';
+        appendTokens(lineEl, line.text, pageNumber);
+        text.appendChild(lineEl);
+        previous = line;
+      });
+    }
+
+    card.appendChild(text);
+    return card;
+  }
+
+  function getReadingPosition() {
+    if (!currentBook) return null;
+    const cards = bookEl.querySelectorAll('.page-card');
+    if (!cards.length) return null;
+    const refY = window.innerHeight * 0.3;
+    let best = null;
+    let nearest = null;
+    cards.forEach((card) => {
+      const rect = card.getBoundingClientRect();
+      const page = Number(card.getAttribute('data-page')) || 1;
+      if (rect.top <= refY && rect.bottom > refY && !best) {
+        best = { page: page, offset: refY - rect.top };
+      }
+      if (!nearest || Math.abs(rect.top - refY) < Math.abs(nearest.top - refY)) {
+        nearest = { page: page, offset: refY - rect.top, top: rect.top };
+      }
+    });
+    return best || (nearest ? { page: nearest.page, offset: nearest.offset } : null);
+  }
+
+  function updateReadingStatus(resumed) {
+    if (!currentBook) return;
+    const position = getReadingPosition();
+    if (!position) return;
+    const message = resumed
+      ? 'Resumed at page ' + position.page + ' of ' + currentBook.pages + '.'
+      : 'Reading page ' + position.page + ' of ' + currentBook.pages + '…';
+    setStatus(storagePrefix() + message);
+  }
+
+  async function restorePosition(page, offset) {
+    const card = bookEl.querySelector('.page-card[data-page="' + page + '"]');
+    if (!card) return;
+    card.scrollIntoView({ block: 'start', behavior: 'auto' });
+    await nextFrame();
+    const refY = window.innerHeight * 0.3;
+    const rect = card.getBoundingClientRect();
+    const delta = rect.top - refY + (Number(offset) || 0);
+    if (Math.abs(delta) > 1) window.scrollBy(0, delta);
+    await nextFrame();
+  }
+
+  async function savePositionNow() {
+    if (!currentBook || isRendering) return;
+    const position = getReadingPosition();
+    if (!position) return;
+    currentBook.meta.page = position.page;
+    currentBook.meta.offset = Math.round(position.offset);
+    currentBook.meta.updatedAt = Date.now();
+    try {
+      await dbPutMeta(currentBook.meta);
+    } catch (e) {
+      markStorageUnavailable();
+    }
+  }
+
+  function scheduleSavePosition() {
+    if (!currentBook || isRendering) return;
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => { savePositionNow(); }, 500);
+  }
+
+  function closeCurrentBook() {
+    loadToken++;
+    currentBook = null;
+    isRendering = false;
+    bookEl.innerHTML = '';
+    emptyState.classList.remove('hidden');
+    hideError();
+    updateEmptyHint();
+  }
+
+  async function openPdfBuffer(options) {
+    const token = options.token;
+    const pages = options.pages;
+    const existing = options.existing || null;
+    const savedPage = Math.max(1, Math.min(pages, Number(existing && existing.page) || 1));
+    const savedOffset = Number(existing && existing.offset) || 0;
+
+    const meta = {
+      key: options.key,
+      id: options.baseId,
+      owner: getOwnerId(),
+      name: options.name,
+      size: options.size,
+      lastModified: options.lastModified,
+      addedAt: (existing && existing.addedAt) || Date.now(),
+      updatedAt: Date.now(),
+      page: savedPage,
+      offset: savedOffset,
+      pages: pages
+    };
+
+    currentBook = { key: options.key, baseId: options.baseId, name: options.name, pages: pages, meta: meta };
+    isRendering = true;
+    bookEl.innerHTML = '';
+    emptyState.classList.add('hidden');
+    hideError();
+
+    let charCount = 0;
+    try {
+      for (let i = 1; i <= pages; i++) {
+        if (token !== loadToken) return;
+        setStatus('Reading page ' + i + ' of ' + pages + '…', 'loading');
+        const page = await options.pdf.getPage(i);
+        const content = await page.getTextContent();
+        if (token !== loadToken) return;
+        const lines = buildTextLines(content.items);
+        lines.forEach((line) => { charCount += line.text.length; });
+        bookEl.appendChild(createPageCard(i, lines));
+        if (i % 2 === 0) await nextFrame();
+      }
+    } catch (e) {
+      if (token !== loadToken) return;
+      isRendering = false;
+      currentBook = null;
+      bookEl.innerHTML = '';
+      emptyState.classList.remove('hidden');
+      showError('This PDF could not be read. It may be password-protected, damaged, or use an unsupported format.');
+      setStatus('Could not read this PDF.', 'error');
+      return;
+    }
+
+    if (token !== loadToken) return;
+
+    if (charCount < 5) {
+      isRendering = false;
+      currentBook = null;
+      bookEl.innerHTML = '';
+      emptyState.classList.remove('hidden');
+      showError('This PDF has no selectable text. It may be a scanned book. Use an OCR version, or a PDF with real text, to read and translate words.');
+      setStatus('No selectable text found in this PDF.', 'error');
+      return;
+    }
+
+    try {
+      await dbPutMeta(meta);
+      if (options.storeBlob && options.blob) await dbPutFile(options.key, options.blob);
+    } catch (e) {
+      markStorageUnavailable();
+    }
+
+    if (token !== loadToken) return;
+    isRendering = false;
+
+    const resumed = !!(existing && (savedPage > 1 || Math.abs(savedOffset) > 4));
+    if (resumed) {
+      await restorePosition(savedPage, savedOffset);
+      updateReadingStatus(true);
+    } else {
+      window.scrollTo({ top: 0, behavior: 'auto' });
+      updateReadingStatus(false);
+    }
+    savePositionNow();
+  }
+
+  async function openFile(file) {
+    if (!file) return;
+    if (!window.pdfjsLib) {
+      showError('PDF.js could not load. Check your internet connection and reload the page.');
+      setStatus('PDF.js is not available.', 'error');
+      return;
+    }
+    const looksPdf = /\.pdf$/i.test(file.name || '') || file.type === 'application/pdf';
+    if (!looksPdf) {
+      showError('That file is not a PDF. Please choose a PDF file.');
+      setStatus('Please choose a PDF file.', 'error');
+      return;
+    }
+
+    await savePositionNow();
+    closePopup();
+    closePanels();
+    hideError();
+
+    const baseId = (file.name || 'document.pdf') + '|' + (file.size || 0) + '|' + (file.lastModified || 0);
+    const key = bookStorageKey(getOwnerId(), baseId);
+    let existing = null;
+    try {
+      existing = await dbGetMeta(key);
+    } catch (e) {
+      markStorageUnavailable();
+    }
+
+    closeCurrentBook();
+    const token = ++loadToken;
+    isRendering = true;
+    setStatus('Opening ' + (file.name || 'PDF') + '…', 'loading');
+
+    let buffer;
+    try {
+      buffer = await readBlob(file);
+    } catch (e) {
+      if (token === loadToken) {
+        isRendering = false;
+        showError('Could not read this file from your device.');
+        setStatus('Could not read this file.', 'error');
+      }
+      return;
+    }
+
+    if (token !== loadToken) return;
+
+    let pdf;
+    try {
+      pdf = await window.pdfjsLib.getDocument({ data: new Uint8Array(buffer) }).promise;
+    } catch (e) {
+      if (token === loadToken) {
+        isRendering = false;
+        showError('This PDF could not be opened. It may be password-protected or damaged.');
+        setStatus('Could not open this PDF.', 'error');
+      }
+      return;
+    }
+
+    if (token !== loadToken) return;
+    await openPdfBuffer({
+      pdf: pdf,
+      pages: pdf.numPages,
+      buffer: buffer,
+      baseId: baseId,
+      key: key,
+      name: file.name || 'document.pdf',
+      size: file.size || 0,
+      lastModified: file.lastModified || 0,
+      blob: file,
+      storeBlob: true,
+      existing: existing,
+      token: token
+    });
+  }
+
+  async function openLibraryBook(meta) {
+    if (!meta || !meta.key) return;
+    await savePositionNow();
+    closePopup();
+    closePanels();
+    hideError();
+
+    let blob;
+    try {
+      blob = await dbGetFile(meta.key);
+    } catch (e) {
+      markStorageUnavailable();
+      showError('The stored PDF could not be read from this browser.');
+      setStatus('Could not open the saved book.', 'error');
+      return;
+    }
+    if (!blob) {
+      showError('The PDF file for this book is missing from this browser. Delete the entry and add the PDF again.');
+      setStatus('The stored PDF file is missing.', 'error');
+      return;
+    }
+
+    closeCurrentBook();
+    const token = ++loadToken;
+    isRendering = true;
+    setStatus('Opening ' + meta.name + '…', 'loading');
+
+    let buffer;
+    try {
+      buffer = await readBlob(blob);
+    } catch (e) {
+      if (token === loadToken) {
+        isRendering = false;
+        showError('Could not read the stored PDF.');
+        setStatus('Could not read the stored PDF.', 'error');
+      }
+      return;
+    }
+
+    if (token !== loadToken) return;
+
+    let pdf;
+    try {
+      pdf = await window.pdfjsLib.getDocument({ data: new Uint8Array(buffer) }).promise;
+    } catch (e) {
+      if (token === loadToken) {
+        isRendering = false;
+        showError('This PDF could not be opened. It may be password-protected or damaged.');
+        setStatus('Could not open this PDF.', 'error');
+      }
+      return;
+    }
+
+    if (token !== loadToken) return;
+    await openPdfBuffer({
+      pdf: pdf,
+      pages: pdf.numPages,
+      baseId: meta.id,
+      key: meta.key,
+      name: meta.name,
+      size: meta.size,
+      lastModified: meta.lastModified,
+      blob: blob,
+      storeBlob: false,
+      existing: meta,
+      token: token
+    });
+  }
+
+  /* ---------------- Library and panels ---------------- */
+
+  function closePanels() {
+    wordsPanel.classList.remove('open');
+    libraryPanel.classList.remove('open');
+    wordsPanel.setAttribute('aria-hidden', 'true');
+    libraryPanel.setAttribute('aria-hidden', 'true');
+    panelBackdrop.classList.add('hidden');
+    document.body.classList.remove('panel-open');
+  }
+
+  function openPanel(which) {
+    closePanels();
+    closePopup();
+    if (which === 'words') {
+      wordsPanel.classList.add('open');
+      wordsPanel.setAttribute('aria-hidden', 'false');
+      renderWordsList();
+      updateWordsUI();
+    } else {
+      libraryPanel.classList.add('open');
+      libraryPanel.setAttribute('aria-hidden', 'false');
+      renderLibrary();
+    }
+    panelBackdrop.classList.remove('hidden');
+    document.body.classList.add('panel-open');
+  }
+
+  async function renderLibrary() {
+    libraryList.innerHTML = '';
+    updateStorageNotes();
+    let books = [];
+    try {
+      const all = await dbGetAllMeta();
+      books = (Array.isArray(all) ? all : []).filter((book) => book && book.owner === getOwnerId());
+    } catch (e) {
+      markStorageUnavailable();
+    }
+    books.sort((a, b) => (b.updatedAt || b.addedAt || 0) - (a.updatedAt || a.addedAt || 0));
+
+    if (!books.length) {
+      const empty = document.createElement('div');
+      empty.className = 'panel-empty';
+      empty.textContent = storageUnavailable
+        ? 'No saved books are available because storage is unavailable.'
+        : 'No books yet. Add a PDF to start your library.';
+      libraryList.appendChild(empty);
+      return;
+    }
+
+    books.forEach((book) => {
+      const item = document.createElement('article');
+      item.className = 'book-item';
+
+      const top = document.createElement('div');
+      top.className = 'book-item-top';
+
+      const main = document.createElement('div');
+      main.style.minWidth = '0';
+      const title = document.createElement('h3');
+      title.className = 'book-title';
+      title.textContent = book.name || 'Untitled PDF';
+
+      const meta = document.createElement('p');
+      meta.className = 'book-meta';
+      const date = new Date(book.updatedAt || book.addedAt || Date.now());
+      const dateText = date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+      meta.textContent = 'Page ' + (book.page || 1) + ' of ' + (book.pages || '?') + ' · ' + dateText;
+      main.append(title, meta);
+
+      const actions = document.createElement('div');
+      actions.className = 'book-actions';
+      const open = document.createElement('button');
+      open.className = 'btn btn-sm btn-primary';
+      open.type = 'button';
+      open.textContent = (book.page || 1) > 1 ? 'Continue' : 'Open';
+      open.addEventListener('click', () => openLibraryBook(book));
+
+      const del = document.createElement('button');
+      del.className = 'btn btn-sm btn-danger';
+      del.type = 'button';
+      del.textContent = 'Delete';
+      del.addEventListener('click', async () => {
+        if (!window.confirm('Delete “' + (book.name || 'this book') + '” from this device? The saved PDF and reading position will be removed.')) return;
+        try {
+          await dbDeleteBook(book.key);
+        } catch (e) {
+          markStorageUnavailable();
+          setStatus('Could not delete this book.', 'error');
+          return;
+        }
+        if (currentBook && currentBook.key === book.key) {
+          closeCurrentBook();
+          setStatus('Book deleted.');
+        } else {
+          setStatus('Deleted “' + (book.name || 'book') + '”.');
+        }
+        renderLibrary();
+      });
+
+      actions.append(open, del);
+      top.append(main, actions);
+      item.appendChild(top);
+      libraryList.appendChild(item);
+    });
+  }
+
+  function closeAccountModal() {
+    accountModal.classList.add('hidden');
+    accountModal.setAttribute('aria-hidden', 'true');
+    document.body.classList.remove('modal-open');
+  }
+
+  function openAccountModal() {
+    closePanels();
+    closePopup();
+    renderAccountModal();
+    accountModal.classList.remove('hidden');
+    accountModal.setAttribute('aria-hidden', 'false');
+    document.body.classList.add('modal-open');
+  }
+
+  /* ---------------- Event wiring ---------------- */
+
+  function openFilePicker() {
+    fileInput.value = '';
+    fileInput.click();
+  }
+
+  openPdfBtn.addEventListener('click', openFilePicker);
+  emptyOpenBtn.addEventListener('click', openFilePicker);
+  $('addPdfBtn').addEventListener('click', openFilePicker);
+  fileInput.addEventListener('change', () => {
+    const file = fileInput.files && fileInput.files[0];
+    if (file) openFile(file);
+    fileInput.value = '';
+  });
+
+  libraryBtn.addEventListener('click', () => openPanel('library'));
+  emptyLibraryBtn.addEventListener('click', () => openPanel('library'));
+  savedBtn.addEventListener('click', () => openPanel('words'));
+
+  $('closeWordsPanel').addEventListener('click', closePanels);
+  $('closeLibraryPanel').addEventListener('click', closePanels);
+  panelBackdrop.addEventListener('click', closePanels);
+
+  exportWordsBtn.addEventListener('click', exportWords);
+  clearWordsBtn.addEventListener('click', clearWords);
+
+  themeBtn.addEventListener('click', () => {
+    const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+    applyTheme(next, true);
+  });
+
+  accountBtn.addEventListener('click', openAccountModal);
+  $('closeAccountBtn').addEventListener('click', closeAccountModal);
+  accountModal.addEventListener('click', (event) => {
+    if (event.target === accountModal) closeAccountModal();
+  });
+
+  sourceSelect.addEventListener('change', () => {
+    translationCache.clear();
+    closePopup();
+    savePrefs();
+  });
+
+  targetSelect.addEventListener('change', () => {
+    translationCache.clear();
+    closePopup();
+    savePrefs();
+  });
+
+  textSizeInput.addEventListener('input', () => {
+    applyTextSize(textSizeInput.value);
+    savePrefs();
+  });
+
+  $('closePopupBtn').addEventListener('click', closePopup);
+  speakWordBtn.addEventListener('click', () => {
+    if (!popupState) return;
+    speakText(popupState.display, popupState.source);
+  });
+  speakTranslationBtn.addEventListener('click', () => {
+    if (!popupState || !popupState.translation) return;
+    speakText(popupState.translation, popupState.target);
+  });
+  saveWordBtn.addEventListener('click', saveCurrentWord);
+
+  bookEl.addEventListener('click', (event) => {
+    const wordEl = event.target.closest ? event.target.closest('.word') : null;
+    if (!wordEl) return;
+    const selection = window.getSelection();
+    if (selection && !selection.isCollapsed && selection.toString().trim()) {
+      if (selection.anchorNode && bookEl.contains(selection.anchorNode)) return;
+    }
+    openWordPopup(wordEl);
+  });
+
+  function scheduleSelectionCheck() {
+    clearTimeout(selectionTimer);
+    selectionTimer = setTimeout(() => {
+      if (!currentBook) return;
+      const selection = window.getSelection();
+      if (!selection || selection.isCollapsed || !selection.rangeCount) return;
+      const raw = selection.toString();
+      if (!raw || !raw.trim()) return;
+      const range = selection.getRangeAt(0);
+      if (!bookEl.contains(range.commonAncestorContainer)) return;
+      const cleaned = raw.replace(/\s+/g, ' ').trim();
+      if (!cleaned) return;
+      const text = cleaned.slice(0, MAX_SELECTION);
+      const rect = range.getBoundingClientRect();
+      if (!rect || (rect.width === 0 && rect.height === 0)) return;
+      openPhrasePopup(text, range, rect);
+    }, 220);
+  }
+
+  bookEl.addEventListener('mouseup', scheduleSelectionCheck);
+  bookEl.addEventListener('touchend', scheduleSelectionCheck, { passive: true });
+
+  document.addEventListener('pointerdown', (event) => {
+    if (!popup.classList.contains('hidden') && !popup.contains(event.target)) closePopup();
+    if (!accountModal.classList.contains('hidden') && !accountModalCard.contains(event.target)) closeAccountModal();
+  }, true);
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    if (!accountModal.classList.contains('hidden')) { closeAccountModal(); return; }
+    if (!popup.classList.contains('hidden')) { closePopup(); return; }
+    if (wordsPanel.classList.contains('open') || libraryPanel.classList.contains('open')) closePanels();
+  });
+
+  window.addEventListener('scroll', () => {
+    if (!currentBook || isRendering) return;
+    if (!statusFrame) {
+      statusFrame = requestAnimationFrame(() => {
+        statusFrame = 0;
+        updateReadingStatus(false);
+        repositionPopup();
+      });
+    }
+    scheduleSavePosition();
+  }, { passive: true });
+
+  window.addEventListener('resize', () => {
+    if (!popup.classList.contains('hidden')) repositionPopup();
+  });
+
+  window.addEventListener('pagehide', () => { savePositionNow(); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') savePositionNow();
+  });
+
+  window.addEventListener('dragenter', (event) => {
+    if (!event.dataTransfer || !Array.from(event.dataTransfer.types || []).includes('Files')) return;
+    event.preventDefault();
+    dragDepth++;
+    document.body.classList.add('dragging');
+  });
+  window.addEventListener('dragover', (event) => {
+    if (event.dataTransfer && Array.from(event.dataTransfer.types || []).includes('Files')) {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'copy';
+    }
+  });
+  window.addEventListener('dragleave', (event) => {
+    if (!event.dataTransfer) return;
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) document.body.classList.remove('dragging');
+  });
+  window.addEventListener('drop', (event) => {
+    event.preventDefault();
+    dragDepth = 0;
+    document.body.classList.remove('dragging');
+    const file = event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files[0];
+    if (file) openFile(file);
+  });
+
+  /* ---------------- Start ---------------- */
+
+  if (window.pdfjsLib && window.pdfjsLib.GlobalWorkerOptions) {
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER;
+  }
+
+  loadCurrentProfile();
+  loadPrefs();
+  loadSavedWords();
+  updateAccountButton();
+  updateStorageNotes();
+  updateThemeButton();
+  setStatus('Ready. Open a PDF to start reading.');
+  updateEmptyHint();
+})();
+</script>
+</body>
+</html>
