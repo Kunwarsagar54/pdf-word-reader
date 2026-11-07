@@ -3,7 +3,8 @@
   PDF Word Reader - a single-file, browser-only French reading app.
 
   External services and what they are for:
-  - PDF.js from cdnjs: parses the PDF locally in the browser.
+  - PDF.js from cdnjs: parses PDFs locally in the browser.
+  - JSZip from jsDelivr: unpacks EPUBs locally in the browser.
   - Google Identity Services: optional Google sign-in. It returns an ID token that is
     decoded locally to create a profile. There is no app server and no token verification.
   - Browser Translator API: on-device translation when the browser supports it.
@@ -16,7 +17,7 @@
   - translate.google.com/translate_tts: recorded pronunciation audio.
   - Web Speech API (speechSynthesis): device-voice fallback for pronunciation.
 
-  PDFs never leave the browser. The text you tap or select may be sent to the translation
+  Books never leave the browser. The text you tap or select may be sent to the translation
   service that handles the request. Translation and pronunciation depend on the device,
   browser support, and network. Google sign-in needs your own OAuth Client ID.
 
@@ -29,14 +30,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <meta name="referrer" content="no-referrer" />
 <title>PDF Word Reader</title>
-<meta name="description" content="Read French PDF books on any device. Tap a word for translation and pronunciation, select a phrase, save words, and resume where you stopped." />
+<meta name="description" content="Read French PDF and EPUB books on any device. Tap a word for translation and pronunciation, select a phrase, save words, and resume where you stopped." />
 <meta name="theme-color" content="#f7f1e7" />
 <link rel="apple-touch-icon" href="apple-touch-icon.png" />
 <link rel="manifest" href="site.webmanifest" />
 <meta property="og:type" content="website" />
 <meta property="og:site_name" content="PDF Word Reader" />
 <meta property="og:title" content="PDF Word Reader" />
-<meta property="og:description" content="Read French PDF books in your browser. Tap a word for an instant translation and pronunciation, select a phrase, save words, and pick up where you stopped." />
+<meta property="og:description" content="Read French PDF and EPUB books in your browser. Tap a word for an instant translation and pronunciation, select a phrase, save words, and pick up where you stopped." />
 <meta property="og:url" content="https://kunwarsagar54.github.io/pdf-word-reader/" />
 <meta property="og:image" content="https://kunwarsagar54.github.io/pdf-word-reader/og-image.png" />
 <meta property="og:image:width" content="1200" />
@@ -44,7 +45,7 @@
 <meta property="og:image:alt" content="PDF Word Reader: a French sentence with the word est translated as is." />
 <meta name="twitter:card" content="summary_large_image" />
 <meta name="twitter:title" content="PDF Word Reader" />
-<meta name="twitter:description" content="Read French PDF books in your browser. Tap a word for an instant translation and pronunciation, select a phrase, save words, and pick up where you stopped." />
+<meta name="twitter:description" content="Read French PDF and EPUB books in your browser. Tap a word for an instant translation and pronunciation, select a phrase, save words, and pick up where you stopped." />
 <meta name="twitter:image" content="https://kunwarsagar54.github.io/pdf-word-reader/og-image.png" />
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23b5542d'/%3E%3Ctext x='16' y='23' font-family='Georgia,serif' font-size='17' fill='white' text-anchor='middle'%3Ea%3C/text%3E%3C/svg%3E" />
 <script>
@@ -471,6 +472,11 @@
   }
 
   .line { white-space: pre-wrap; }
+  .line-heading {
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    margin-bottom: 0.15em;
+  }
   .line-spacer { height: 0.82em; }
   .page-empty { color: var(--faint); font-style: italic; font-size: 14px; }
 
@@ -873,7 +879,7 @@
     </div>
 
     <div class="toolbar" aria-label="Reader controls">
-      <button class="btn btn-primary" id="openPdfBtn" type="button">Open PDF</button>
+      <button class="btn btn-primary" id="openPdfBtn" type="button">Open book</button>
       <button class="btn" id="libraryBtn" type="button">My books</button>
 
       <label class="field" for="sourceLang">Book language
@@ -902,15 +908,15 @@
 </header>
 
 <main id="main">
-  <div class="status" id="status" role="status" aria-live="polite">Ready. Open a PDF to start reading.</div>
+  <div class="status" id="status" role="status" aria-live="polite">Ready. Open a PDF or EPUB to start reading.</div>
   <div class="error-box hidden" id="errorBox" role="alert"></div>
 
   <section class="empty-state" id="emptyState" aria-labelledby="emptyTitle">
     <div class="empty-icon" aria-hidden="true">📖</div>
     <h1 id="emptyTitle">Read a book, one word at a time.</h1>
-    <p>Open a French PDF and tap any word to see its translation and hear it. Select a phrase to translate the whole phrase. Your place is saved automatically.</p>
+    <p>Open a French PDF or EPUB and tap any word to see its translation and hear it. Select a phrase to translate the whole phrase. Your place is saved automatically.</p>
     <div class="empty-actions">
-      <button class="btn btn-primary" id="emptyOpenBtn" type="button">Open a PDF</button>
+      <button class="btn btn-primary" id="emptyOpenBtn" type="button">Open a book</button>
       <button class="btn" id="emptyLibraryBtn" type="button">My books</button>
     </div>
     <ul class="empty-list">
@@ -919,15 +925,15 @@
       <li><strong>Come back later</strong>Saved books and words stay on this device.</li>
     </ul>
     <p class="profile-hint" id="profileHint"></p>
-    <p class="profile-hint">Translation and pronunciation depend on your device, browser support, and network. Your PDF never leaves the browser.</p>
+    <p class="profile-hint">Translation and pronunciation depend on your device, browser support, and network. Your books never leave the browser.</p>
   </section>
 
   <div class="book" id="book" aria-label="Book text"></div>
 </main>
 
-<input type="file" id="fileInput" accept="application/pdf,.pdf" hidden />
+<input type="file" id="fileInput" accept="application/pdf,.pdf,application/epub+zip,.epub" hidden />
 
-<div class="drop-overlay" id="dropOverlay" aria-hidden="true">Drop a PDF to open it</div>
+<div class="drop-overlay" id="dropOverlay" aria-hidden="true">Drop a PDF or EPUB to open it</div>
 
 <div class="backdrop hidden" id="panelBackdrop"></div>
 
@@ -950,7 +956,7 @@
     <button class="icon-btn" id="closeLibraryPanel" type="button" aria-label="Close my books">×</button>
   </div>
   <div class="panel-actions">
-    <button class="btn btn-sm btn-primary" id="addPdfBtn" type="button">Add a PDF</button>
+    <button class="btn btn-sm btn-primary" id="addPdfBtn" type="button">Add a book</button>
   </div>
   <p class="panel-note hidden" id="libraryStorageNote">Storage is unavailable. Books cannot be saved on this device.</p>
   <div class="panel-list" id="libraryList"></div>
@@ -980,6 +986,7 @@
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <script>
 /* App code starts here. */
@@ -1756,7 +1763,7 @@
     updateStorageNotes();
 
     if (profile) {
-      setStatus('Signed in as ' + profile.name + '. Open a PDF or choose one from My books.');
+      setStatus('Signed in as ' + profile.name + '. Open a book or choose one from My books.');
     } else {
       setStatus('Signed out. You are using the guest library on this device.');
     }
@@ -3112,14 +3119,14 @@
     if (last < text.length) element.appendChild(document.createTextNode(text.slice(last)));
   }
 
-  function createPageCard(pageNumber, lines) {
+  function createPageCard(pageNumber, lines, labelText) {
     const card = document.createElement('article');
     card.className = 'page-card';
     card.setAttribute('data-page', String(pageNumber));
 
     const label = document.createElement('div');
     label.className = 'page-label';
-    label.textContent = 'Page ' + pageNumber;
+    label.textContent = labelText || ('Page ' + pageNumber);
     card.appendChild(label);
 
     const text = document.createElement('div');
@@ -3143,7 +3150,7 @@
           }
         }
         const lineEl = document.createElement('div');
-        lineEl.className = 'line';
+        lineEl.className = line.heading ? 'line line-heading' : 'line';
         appendTokens(lineEl, line.text, pageNumber);
         text.appendChild(lineEl);
         previous = line;
@@ -3152,6 +3159,284 @@
 
     card.appendChild(text);
     return card;
+  }
+
+  /* ---------------- EPUB parsing ---------------- */
+
+  // An EPUB is a ZIP of XHTML chapters. It is unpacked here and then fed through
+  // the same page cards, word tapping, saving and resume code as a PDF, so the
+  // reader works exactly the same for both formats.
+
+  const EPUB_SKIP_TAGS = new Set(['script', 'style', 'head', 'title', 'svg', 'math', 'template', 'noscript', 'audio', 'video', 'iframe', 'object', 'canvas']);
+  const EPUB_BLOCK_TAGS = new Set(['p', 'div', 'section', 'article', 'header', 'footer', 'li', 'blockquote', 'pre', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'tr', 'td', 'th', 'figcaption', 'dd', 'dt', 'main', 'aside', 'nav', 'ul', 'ol', 'table', 'body']);
+  const EPUB_HEADING_TAGS = new Set(['h1', 'h2', 'h3']);
+
+  function parseBookXml(text) {
+    if (!text) return null;
+    try {
+      const doc = new DOMParser().parseFromString(text, 'application/xhtml+xml');
+      if (doc && !doc.querySelector('parsererror')) return doc;
+    } catch (e) { /* fall through */ }
+    try {
+      return new DOMParser().parseFromString(text, 'text/html');
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function parseBookHtml(text) {
+    if (!text) return null;
+    try {
+      return new DOMParser().parseFromString(text, 'text/html');
+    } catch (e) {
+      return parseBookXml(text);
+    }
+  }
+
+  function elementsByLocalName(doc, name) {
+    if (!doc) return [];
+    const all = doc.getElementsByTagName('*');
+    const out = [];
+    for (let i = 0; i < all.length; i++) {
+      const local = (all[i].localName || all[i].nodeName || '').toLowerCase();
+      if (local === name) out.push(all[i]);
+    }
+    return out;
+  }
+
+  function firstByLocalName(doc, name) {
+    const list = elementsByLocalName(doc, name);
+    return list.length ? list[0] : null;
+  }
+
+  function epubResolvePath(baseDir, href) {
+    let clean = String(href || '').split('#')[0];
+    try { clean = decodeURIComponent(clean); } catch (e) { /* keep as is */ }
+    const parts = [];
+    (baseDir ? baseDir + '/' : '').split('/').concat(clean.split('/')).forEach((part) => {
+      if (!part || part === '.') return;
+      if (part === '..') { parts.pop(); return; }
+      parts.push(part);
+    });
+    return parts.join('/');
+  }
+
+  function epubZipText(zip, entries, path) {
+    const file = entries.get(path) || zip.file(path);
+    return file ? file.async('string') : Promise.resolve(null);
+  }
+
+  // Walk the chapter and turn it into clean paragraphs. Block elements start a
+  // new paragraph; inline markup stays in the same one. Images and scripts are
+  // ignored, so only readable text reaches the reader.
+  function collectEpubParagraphs(root) {
+    const events = [];
+    const walk = (el) => {
+      const tag = (el.localName || '').toLowerCase();
+      if (EPUB_SKIP_TAGS.has(tag)) return;
+      if (tag === 'br') { events.push({ br: true }); return; }
+      const block = EPUB_BLOCK_TAGS.has(tag);
+      const heading = EPUB_HEADING_TAGS.has(tag);
+      if (block) events.push({ br: true });
+      const children = el.childNodes;
+      for (let i = 0; i < children.length; i++) {
+        const node = children[i];
+        if (node.nodeType === 3) events.push({ text: node.nodeValue || '', heading: heading });
+        else if (node.nodeType === 1) walk(node);
+      }
+      if (block) events.push({ br: true });
+    };
+    walk(root);
+
+    const paragraphs = [];
+    let buffer = '';
+    let heading = false;
+    const flush = () => {
+      const text = buffer.replace(/\s+/g, ' ').trim();
+      if (text) paragraphs.push({ text: text, heading: heading });
+      buffer = '';
+      heading = false;
+    };
+    events.forEach((event) => {
+      if (event.br) { flush(); return; }
+      if (event.heading) heading = true;
+      buffer += event.text;
+    });
+    flush();
+    return paragraphs;
+  }
+
+  function epubChapterTitle(paragraphs) {
+    const heading = paragraphs.find((paragraph) => paragraph.heading);
+    return heading ? heading.text.slice(0, 90) : '';
+  }
+
+  function collectEpubNcxToc(doc, opfDir) {
+    const map = new Map();
+    if (!doc) return map;
+    elementsByLocalName(doc, 'navpoint').forEach((point) => {
+      let labelEl = null;
+      let contentEl = null;
+      for (let i = 0; i < point.children.length; i++) {
+        const child = point.children[i];
+        const name = (child.localName || '').toLowerCase();
+        if (name === 'navlabel' && !labelEl) labelEl = child;
+        if (name === 'content' && !contentEl) contentEl = child;
+      }
+      if (!labelEl || !contentEl) return;
+      const label = (labelEl.textContent || '').replace(/\s+/g, ' ').trim();
+      const src = contentEl.getAttribute('src');
+      if (!label || !src) return;
+      const path = epubResolvePath(opfDir, src);
+      if (!map.has(path)) map.set(path, label);
+    });
+    return map;
+  }
+
+  function collectEpubNavToc(doc, opfDir) {
+    const map = new Map();
+    if (!doc) return map;
+    elementsByLocalName(doc, 'a').forEach((link) => {
+      const href = link.getAttribute('href');
+      const label = (link.textContent || '').replace(/\s+/g, ' ').trim();
+      if (!href || !label) return;
+      const path = epubResolvePath(opfDir, href);
+      if (!map.has(path)) map.set(path, label);
+    });
+    return map;
+  }
+
+  function epubMetadata(opf) {
+    const clean = (el) => (el && el.textContent ? el.textContent.replace(/\s+/g, ' ').trim() : '');
+    return {
+      title: clean(firstByLocalName(opf, 'title')),
+      author: clean(firstByLocalName(opf, 'creator'))
+    };
+  }
+
+  async function readEpubBook(buffer) {
+    if (typeof window.JSZip !== 'function') {
+      throw new Error('The EPUB engine could not load. Check your internet connection and reload the page.');
+    }
+    let zip;
+    try {
+      zip = await window.JSZip.loadAsync(buffer);
+    } catch (e) {
+      throw new Error('This EPUB could not be opened. It may be damaged or not a real EPUB.');
+    }
+
+    const entries = new Map();
+    Object.keys(zip.files).forEach((name) => {
+      entries.set(name, zip.files[name]);
+      try { entries.set(decodeURIComponent(name), zip.files[name]); } catch (e) { /* ignore */ }
+    });
+
+    const containerText = await epubZipText(zip, entries, 'META-INF/container.xml');
+    if (!containerText) throw new Error('This EPUB is missing its container file.');
+    const container = parseBookXml(containerText);
+    const rootfile = firstByLocalName(container, 'rootfile');
+    const opfPath = rootfile && rootfile.getAttribute('full-path');
+    if (!opfPath) throw new Error('This EPUB does not point to a package file.');
+
+    const opfText = await epubZipText(zip, entries, opfPath);
+    if (!opfText) throw new Error('This EPUB is missing its package file.');
+    const opf = parseBookXml(opfText);
+    if (!opf) throw new Error('This EPUB has an unreadable package file.');
+
+    const opfDir = opfPath.includes('/') ? opfPath.slice(0, opfPath.lastIndexOf('/')) : '';
+    const info = epubMetadata(opf);
+
+    const manifest = new Map();
+    elementsByLocalName(opf, 'item').forEach((item) => {
+      const id = item.getAttribute('id');
+      if (!id) return;
+      manifest.set(id, {
+        href: item.getAttribute('href') || '',
+        type: (item.getAttribute('media-type') || '').toLowerCase(),
+        properties: (item.getAttribute('properties') || '').toLowerCase()
+      });
+    });
+
+    const spine = [];
+    elementsByLocalName(opf, 'itemref').forEach((ref) => {
+      const item = manifest.get(ref.getAttribute('idref'));
+      if (!item || !item.href) return;
+      if (item.type && !/xhtml|html|xml/.test(item.type)) return;
+      spine.push(item);
+    });
+    if (!spine.length) throw new Error('This EPUB has no readable chapters.');
+
+    const tocMap = new Map();
+    const ncxItem = Array.from(manifest.values()).find((item) => item.type === 'application/x-dtbncx+xml');
+    if (ncxItem) {
+      const ncxText = await epubZipText(zip, entries, epubResolvePath(opfDir, ncxItem.href));
+      collectEpubNcxToc(parseBookXml(ncxText), opfDir).forEach((label, path) => tocMap.set(path, label));
+    }
+    const navItem = Array.from(manifest.values()).find((item) => /(^|\s)nav(\s|$)/.test(item.properties));
+    if (navItem) {
+      const navText = await epubZipText(zip, entries, epubResolvePath(opfDir, navItem.href));
+      collectEpubNavToc(parseBookHtml(navText), opfDir).forEach((label, path) => {
+        if (!tocMap.has(path)) tocMap.set(path, label);
+      });
+    }
+
+    const pages = [];
+    let sectionNumber = 0;
+    for (const item of spine) {
+      const path = epubResolvePath(opfDir, item.href);
+      const html = await epubZipText(zip, entries, path);
+      if (!html) continue;
+      const doc = parseBookHtml(html);
+      const body = doc && (doc.body || doc.documentElement);
+      if (!body) continue;
+      const paragraphs = collectEpubParagraphs(body);
+      if (!paragraphs.length) continue;
+
+      sectionNumber++;
+      const label = tocMap.get(path) || epubChapterTitle(paragraphs) || ('Section ' + sectionNumber);
+
+      // One card per chapter. Very long chapters are split so the page stays light.
+      let chunk = [];
+      let size = 0;
+      let part = 0;
+      const flush = () => {
+        if (!chunk.length) return;
+        part++;
+        pages.push({
+          label: part === 1 ? label : label + ' (continued)',
+          paragraphs: chunk
+        });
+        chunk = [];
+        size = 0;
+      };
+      paragraphs.forEach((paragraph) => {
+        if (size && size + paragraph.text.length > 9000) flush();
+        chunk.push(paragraph);
+        size += paragraph.text.length + 1;
+      });
+      flush();
+    }
+
+    if (!pages.length) {
+      throw new Error('This EPUB has no readable text. It may be a comic or use images for every page.');
+    }
+    return { title: info.title, author: info.author, pages: pages };
+  }
+
+  function epubLines(paragraphs) {
+    return paragraphs.map((paragraph, index) => ({
+      text: paragraph.text,
+      y: 10000 - index * 100,
+      size: paragraph.heading ? 18 : 16,
+      heading: !!paragraph.heading
+    }));
+  }
+
+  function detectBookFormat(buffer) {
+    const bytes = new Uint8Array(buffer || []);
+    if (bytes.length >= 4 && bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46) return 'pdf';
+    if (bytes.length >= 2 && bytes[0] === 0x50 && bytes[1] === 0x4b) return 'epub';
+    return '';
   }
 
   function getReadingPosition() {
@@ -3178,9 +3463,10 @@
     if (!currentBook) return;
     const position = getReadingPosition();
     if (!position) return;
+    const unit = currentBook.unit || 'page';
     const message = resumed
-      ? 'Resumed at page ' + position.page + ' of ' + currentBook.pages + '.'
-      : 'Reading page ' + position.page + ' of ' + currentBook.pages + '…';
+      ? 'Resumed at ' + unit + ' ' + position.page + ' of ' + currentBook.pages + '.'
+      : 'Reading ' + unit + ' ' + position.page + ' of ' + currentBook.pages + '…';
     setStatus(storagePrefix() + message);
   }
 
@@ -3226,9 +3512,10 @@
     updateEmptyHint();
   }
 
-  async function openPdfBuffer(options) {
+  async function openBook(options) {
     const token = options.token;
     const pages = options.pages;
+    const unit = options.unit || 'page';
     const existing = options.existing || null;
     const savedPage = Math.max(1, Math.min(pages, Number(existing && existing.page) || 1));
     const savedOffset = Number(existing && existing.offset) || 0;
@@ -3238,6 +3525,10 @@
       id: options.baseId,
       owner: getOwnerId(),
       name: options.name,
+      title: options.title || (existing && existing.title) || '',
+      author: options.author || (existing && existing.author) || '',
+      format: options.format || 'pdf',
+      unit: unit,
       size: options.size,
       lastModified: options.lastModified,
       addedAt: (existing && existing.addedAt) || Date.now(),
@@ -3247,7 +3538,7 @@
       pages: pages
     };
 
-    currentBook = { key: options.key, baseId: options.baseId, name: options.name, pages: pages, meta: meta };
+    currentBook = { key: options.key, baseId: options.baseId, name: options.name, pages: pages, unit: unit, meta: meta };
     isRendering = true;
     bookEl.innerHTML = '';
     emptyState.classList.add('hidden');
@@ -3257,13 +3548,12 @@
     try {
       for (let i = 1; i <= pages; i++) {
         if (token !== loadToken) return;
-        setStatus('Reading page ' + i + ' of ' + pages + '…', 'loading');
-        const page = await options.pdf.getPage(i);
-        const content = await page.getTextContent();
+        setStatus('Reading ' + unit + ' ' + i + ' of ' + pages + '…', 'loading');
+        const page = await options.getPage(i);
         if (token !== loadToken) return;
-        const lines = buildTextLines(content.items);
+        const lines = (page && page.lines) || [];
         lines.forEach((line) => { charCount += line.text.length; });
-        bookEl.appendChild(createPageCard(i, lines));
+        bookEl.appendChild(createPageCard(i, lines, page && page.label));
         if (i % 2 === 0) await nextFrame();
       }
     } catch (e) {
@@ -3272,8 +3562,8 @@
       currentBook = null;
       bookEl.innerHTML = '';
       emptyState.classList.remove('hidden');
-      showError('This PDF could not be read. It may be password-protected, damaged, or use an unsupported format.');
-      setStatus('Could not read this PDF.', 'error');
+      showError(options.readError || 'This book could not be read.');
+      setStatus('Could not read this book.', 'error');
       return;
     }
 
@@ -3284,8 +3574,8 @@
       currentBook = null;
       bookEl.innerHTML = '';
       emptyState.classList.remove('hidden');
-      showError('This PDF has no selectable text. It may be a scanned book. Use an OCR version, or a PDF with real text, to read and translate words.');
-      setStatus('No selectable text found in this PDF.', 'error');
+      showError(options.emptyText || 'This book has no selectable text.');
+      setStatus('No selectable text found in this book.', 'error');
       return;
     }
 
@@ -3310,17 +3600,110 @@
     savePositionNow();
   }
 
-  async function openFile(file) {
-    if (!file) return;
+  async function openBufferBook(options) {
+    const token = options.token;
+    const format = options.format || 'pdf';
+
+    if (format === 'epub') {
+      let book;
+      try {
+        book = await readEpubBook(options.buffer);
+      } catch (error) {
+        if (token !== loadToken) return;
+        isRendering = false;
+        closeCurrentBook();
+        showError(error && error.message ? error.message : 'This EPUB could not be read.');
+        setStatus('Could not open this EPUB.', 'error');
+        return;
+      }
+      if (token !== loadToken) return;
+      await openBook({
+        key: options.key,
+        baseId: options.baseId,
+        name: options.name,
+        size: options.size,
+        lastModified: options.lastModified,
+        blob: options.blob,
+        storeBlob: options.storeBlob,
+        existing: options.existing,
+        token: token,
+        format: 'epub',
+        unit: 'chapter',
+        pages: book.pages.length,
+        title: book.title,
+        author: book.author,
+        getPage: (index) => {
+          const page = book.pages[index - 1];
+          if (!page) return { lines: [], label: '' };
+          // The chapter label already shows the title, so skip a heading that
+          // simply repeats it.
+          let paragraphs = page.paragraphs;
+          if (paragraphs.length && paragraphs[0].heading &&
+              paragraphs[0].text.toLowerCase() === page.label.toLowerCase()) {
+            paragraphs = paragraphs.slice(1);
+          }
+          return { lines: epubLines(paragraphs), label: page.label };
+        },
+        readError: 'This EPUB could not be read. It may be damaged.',
+        emptyText: 'This EPUB has no readable text. It may be a comic or use images for every page.'
+      });
+      return;
+    }
+
     if (!window.pdfjsLib) {
+      isRendering = false;
+      closeCurrentBook();
       showError('PDF.js could not load. Check your internet connection and reload the page.');
       setStatus('PDF.js is not available.', 'error');
       return;
     }
-    const looksPdf = /\.pdf$/i.test(file.name || '') || file.type === 'application/pdf';
-    if (!looksPdf) {
-      showError('That file is not a PDF. Please choose a PDF file.');
-      setStatus('Please choose a PDF file.', 'error');
+
+    let pdf;
+    try {
+      pdf = await window.pdfjsLib.getDocument({ data: new Uint8Array(options.buffer) }).promise;
+    } catch (e) {
+      if (token !== loadToken) return;
+      isRendering = false;
+      closeCurrentBook();
+      showError('This PDF could not be opened. It may be password-protected or damaged.');
+      setStatus('Could not open this PDF.', 'error');
+      return;
+    }
+
+    if (token !== loadToken) return;
+    await openBook({
+      key: options.key,
+      baseId: options.baseId,
+      name: options.name,
+      size: options.size,
+      lastModified: options.lastModified,
+      blob: options.blob,
+      storeBlob: options.storeBlob,
+      existing: options.existing,
+      token: token,
+      format: 'pdf',
+      unit: 'page',
+      pages: pdf.numPages,
+      title: (options.existing && options.existing.title) || '',
+      author: (options.existing && options.existing.author) || '',
+      getPage: async (index) => {
+        const page = await pdf.getPage(index);
+        const content = await page.getTextContent();
+        return { lines: buildTextLines(content.items) };
+      },
+      readError: 'This PDF could not be read. It may be password-protected, damaged, or use an unsupported format.',
+      emptyText: 'This PDF has no selectable text. It may be a scanned book. Use an OCR version, or a PDF with real text, to read and translate words.'
+    });
+  }
+
+  async function openFile(file) {
+    if (!file) return;
+    const name = file.name || 'document.pdf';
+    const type = String(file.type || '').toLowerCase();
+    const extension = /\.epub$/i.test(name) ? 'epub' : (/\.pdf$/i.test(name) ? 'pdf' : '');
+    if (!extension && type !== 'application/pdf' && type !== 'application/epub+zip') {
+      showError('That file is not a PDF or EPUB. Please choose a PDF or EPUB book.');
+      setStatus('Please choose a PDF or EPUB book.', 'error');
       return;
     }
 
@@ -3329,7 +3712,7 @@
     closePanels();
     hideError();
 
-    const baseId = (file.name || 'document.pdf') + '|' + (file.size || 0) + '|' + (file.lastModified || 0);
+    const baseId = name + '|' + (file.size || 0) + '|' + (file.lastModified || 0);
     const key = bookStorageKey(getOwnerId(), baseId);
     let existing = null;
     try {
@@ -3341,7 +3724,7 @@
     closeCurrentBook();
     const token = ++loadToken;
     isRendering = true;
-    setStatus('Opening ' + (file.name || 'PDF') + '…', 'loading');
+    setStatus('Opening ' + name + '…', 'loading');
 
     let buffer;
     try {
@@ -3357,26 +3740,12 @@
 
     if (token !== loadToken) return;
 
-    let pdf;
-    try {
-      pdf = await window.pdfjsLib.getDocument({ data: new Uint8Array(buffer) }).promise;
-    } catch (e) {
-      if (token === loadToken) {
-        isRendering = false;
-        showError('This PDF could not be opened. It may be password-protected or damaged.');
-        setStatus('Could not open this PDF.', 'error');
-      }
-      return;
-    }
-
-    if (token !== loadToken) return;
-    await openPdfBuffer({
-      pdf: pdf,
-      pages: pdf.numPages,
+    await openBufferBook({
       buffer: buffer,
+      format: detectBookFormat(buffer) || extension || 'pdf',
       baseId: baseId,
       key: key,
-      name: file.name || 'document.pdf',
+      name: name,
       size: file.size || 0,
       lastModified: file.lastModified || 0,
       blob: file,
@@ -3398,20 +3767,20 @@
       blob = await dbGetFile(meta.key);
     } catch (e) {
       markStorageUnavailable();
-      showError('The stored PDF could not be read from this browser.');
+      showError('The stored book could not be read from this browser.');
       setStatus('Could not open the saved book.', 'error');
       return;
     }
     if (!blob) {
-      showError('The PDF file for this book is missing from this browser. Delete the entry and add the PDF again.');
-      setStatus('The stored PDF file is missing.', 'error');
+      showError('The file for this book is missing from this browser. Delete the entry and add the book again.');
+      setStatus('The stored book file is missing.', 'error');
       return;
     }
 
     closeCurrentBook();
     const token = ++loadToken;
     isRendering = true;
-    setStatus('Opening ' + meta.name + '…', 'loading');
+    setStatus('Opening ' + (meta.title || meta.name) + '…', 'loading');
 
     let buffer;
     try {
@@ -3419,30 +3788,17 @@
     } catch (e) {
       if (token === loadToken) {
         isRendering = false;
-        showError('Could not read the stored PDF.');
-        setStatus('Could not read the stored PDF.', 'error');
+        showError('Could not read the stored book.');
+        setStatus('Could not read the stored book.', 'error');
       }
       return;
     }
 
     if (token !== loadToken) return;
 
-    let pdf;
-    try {
-      pdf = await window.pdfjsLib.getDocument({ data: new Uint8Array(buffer) }).promise;
-    } catch (e) {
-      if (token === loadToken) {
-        isRendering = false;
-        showError('This PDF could not be opened. It may be password-protected or damaged.');
-        setStatus('Could not open this PDF.', 'error');
-      }
-      return;
-    }
-
-    if (token !== loadToken) return;
-    await openPdfBuffer({
-      pdf: pdf,
-      pages: pdf.numPages,
+    await openBufferBook({
+      buffer: buffer,
+      format: meta.format || detectBookFormat(buffer) || 'pdf',
       baseId: meta.id,
       key: meta.key,
       name: meta.name,
@@ -3500,7 +3856,7 @@
       empty.className = 'panel-empty';
       empty.textContent = storageUnavailable
         ? 'No saved books are available because storage is unavailable.'
-        : 'No books yet. Add a PDF to start your library.';
+        : 'No books yet. Add a PDF or EPUB to start your library.';
       libraryList.appendChild(empty);
       return;
     }
@@ -3516,13 +3872,17 @@
       main.style.minWidth = '0';
       const title = document.createElement('h3');
       title.className = 'book-title';
-      title.textContent = book.name || 'Untitled PDF';
+      title.textContent = book.title || book.name || 'Untitled book';
 
       const meta = document.createElement('p');
       meta.className = 'book-meta';
       const date = new Date(book.updatedAt || book.addedAt || Date.now());
       const dateText = date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
-      meta.textContent = 'Page ' + (book.page || 1) + ' of ' + (book.pages || '?') + ' · ' + dateText;
+      const isEpub = book.format === 'epub';
+      const unit = isEpub ? 'Chapter' : 'Page';
+      const byline = book.author ? book.author + ' · ' : '';
+      meta.textContent = byline + unit + ' ' + (book.page || 1) + ' of ' + (book.pages || '?') +
+        ' · ' + (isEpub ? 'EPUB' : 'PDF') + ' · ' + dateText;
       main.append(title, meta);
 
       const actions = document.createElement('div');
@@ -3538,7 +3898,7 @@
       del.type = 'button';
       del.textContent = 'Delete';
       del.addEventListener('click', async () => {
-        if (!window.confirm('Delete “' + (book.name || 'this book') + '” from this device? The saved PDF and reading position will be removed.')) return;
+        if (!window.confirm('Delete “' + (book.title || book.name || 'this book') + '” from this device? The saved file and reading position will be removed.')) return;
         try {
           await dbDeleteBook(book.key);
         } catch (e) {
@@ -3550,7 +3910,7 @@
           closeCurrentBook();
           setStatus('Book deleted.');
         } else {
-          setStatus('Deleted “' + (book.name || 'book') + '”.');
+          setStatus('Deleted “' + (book.title || book.name || 'book') + '”.');
         }
         renderLibrary();
       });
@@ -3769,7 +4129,7 @@
   updateAccountButton();
   updateStorageNotes();
   updateThemeButton();
-  setStatus('Ready. Open a PDF to start reading.');
+  setStatus('Ready. Open a PDF or EPUB to start reading.');
   updateEmptyHint();
 
   // iPhone and iPad mute web audio with the Silent switch, so say so up front.

@@ -1,6 +1,6 @@
 # PDF Word Reader
 
-Read French PDF books in the browser. Tap any word to see its translation and hear it, select a phrase to translate the whole phrase, and pick up exactly where you stopped.
+Read French PDF and EPUB books in the browser. Tap any word to see its translation and hear it, select a phrase to translate the whole phrase, and pick up exactly where you stopped.
 
 **Live app: [kunwarsagar54.github.io/pdf-word-reader](https://kunwarsagar54.github.io/pdf-word-reader/)**
 
@@ -12,14 +12,15 @@ Read French PDF books in the browser. Tap any word to see its translation and he
 - **Select a phrase** to translate the whole phrase.
 - **Picks the right meaning from context.** Google's one-word result for `est` is "East", but its dictionary ranks "is" far higher. The app reads the sentence around the word and the dictionary ranking, so `Le petit prince est content.` gives **is**, `Il voyage à l'est.` gives **east**, and `L'est de la France est beau.` gives **east** for the noun but **is** for the following verb.
 - **Saved words** with export and clear, per profile.
-- **My books** keeps your PDFs, page position, and last-opened time on the device.
-- **Text size slider**, light and dark themes, drag and drop a PDF anywhere.
+- **My books** keeps your PDFs and EPUBs, reading position, and last-opened time on the device.
+- **PDF and EPUB** are both supported. A PDF becomes one card per page; an EPUB is unpacked in the browser and each chapter becomes one card, labelled from the book's table of contents.
+- **Text size slider**, light and dark themes, drag and drop a PDF or EPUB anywhere.
 - **Profiles** — a guest library, local profiles, and optional Google sign-in, each with its own books and saved words.
-- **Works offline-ish**: the page itself is static, and PDF parsing and the natural voice run locally. Translation (and the Google voice) need a network.
+- **Works offline-ish**: the page itself is static, and book parsing and the natural voice run locally. Translation (and the Google voice) need a network.
 
 ## Privacy
 
-- PDFs are parsed in the browser with PDF.js and stored in IndexedDB. **The PDF file is never uploaded.**
+- Books are parsed in the browser (PDF.js for PDFs, JSZip for EPUBs) and stored in IndexedDB. **The book file is never uploaded.**
 - Only the word or phrase you tap is sent to the translation service that handles it.
 - Saved words, books, and positions live in that browser's IndexedDB. They are **per device**, not synced, and not encrypted.
 - Google sign-in is optional. It only reads the name, email, and picture from the ID token, locally. There is no app server and no token verification. It is a convenience profile switch, **not a security boundary** — anyone with access to the browser can switch profiles.
@@ -80,11 +81,11 @@ Pages redeploys in about a minute.
 
 | File | Purpose |
 | --- | --- |
-| `index.html` | The entire app: HTML, CSS, and JavaScript in one file. |
+| `index.html` | The entire app: HTML, CSS, and JavaScript in one file. Reads PDF and EPUB. |
 | `site.webmanifest` | Installable web app metadata. |
 | `icon-192.png`, `icon-512.png`, `apple-touch-icon.png` | Home screen and browser icons. |
 | `og-image.png` | Social preview image. |
 
 ## Built with
 
-Plain HTML, CSS, and JavaScript. No build step, no framework, no server. [PDF.js](https://mozilla.github.io/pdf.js/) 3.11.174 from cdnjs parses the PDFs.
+Plain HTML, CSS, and JavaScript. No build step, no framework, no server. [PDF.js](https://mozilla.github.io/pdf.js/) 3.11.174 parses PDFs, [JSZip](https://stuk.github.io/jszip/) 3.10.1 unpacks EPUBs, and [Piper](https://github.com/rhasspy/piper) with ONNX Runtime powers the natural voice.
