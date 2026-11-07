@@ -1832,8 +1832,10 @@
     if (voice) utterance.voice = voice;
 
     const speak = () => { try { synth.speak(utterance); } catch (e) { /* ignore */ } };
-    // Cancelling immediately before speak() can swallow the new utterance on iOS.
-    if (IS_IOS && (synth.speaking || synth.pending)) {
+    // On iOS, cancelling immediately before speak() can swallow the new utterance,
+    // so always cancel and start a moment later. Speech is already unlocked by the
+    // primer that runs inside the first tap, so the delay is safe.
+    if (IS_IOS) {
       try { synth.cancel(); } catch (e) { /* ignore */ }
       setTimeout(speak, 60);
     } else {
